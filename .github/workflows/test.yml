@@ -1,7 +1,11 @@
 name: Test
 
 on:
+  # Run pushes only once they land on the main branch. Pull requests run on
+  # pull_request below, which avoids duplicate push + PR runs for PR branches.
   push:
+    branches:
+      - main
   pull_request:
 
 jobs:
