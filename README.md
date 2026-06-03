@@ -42,6 +42,62 @@ Exit codes:
 - `1`: validation errors exist
 - `2`: CLI usage error, including a missing model directory
 
+
+### Coverage warnings
+
+Successful validation output includes a compact informational coverage summary after the model and reference summaries:
+
+```text
+Coverage:
+  workflows without explicit trigger:  4
+  capabilities without events:         3
+  unused events:                       2
+```
+
+Coverage findings are informational. They do **not** make a valid model invalid and do **not** change the exit code unless validation errors also exist.
+
+To drill into warning occurrences, pass `--warnings <category>`:
+
+```bash
+behavioml-validate examples/quic/model --warnings all
+behavioml-validate examples/quic/model --warnings unused-events
+behavioml-validate examples/quic/model --warnings workflows-without-explicit-trigger
+```
+
+Detailed output is printed after the compact validation summary:
+
+```text
+Warnings:
+
+workflows without explicit trigger:
+  - workflows/client/establish_connection.yaml triggered_by
+  - workflows/server/accept_connection.yaml triggered_by
+
+capabilities without events:
+  - capabilities/connection/validate_peer.yaml events
+```
+
+Supported warning categories:
+
+```text
+all
+workflows-without-explicit-trigger
+workflows-without-primary-role
+capabilities-without-events
+unused-events
+unused-capabilities
+interfaces-never-required
+interfaces-never-implemented
+components-without-implements
+components-without-module
+modules-without-components
+entities-without-state-machine
+state-machines-without-states
+state-machines-without-transitions
+unused-states
+decisions-without-affects
+```
+
 ## What is validated
 
 The validator currently:
@@ -56,6 +112,7 @@ The validator currently:
 - Applies minimal entity shape checks for workflows, capabilities, components, state machines, and decisions.
 - Resolves semantic references by field type rather than filesystem-relative path.
 - Rejects filesystem-relative references beginning with `./`, beginning with `../`, or containing `/../`.
+- Reports informational coverage findings separately from validation diagnostics.
 
 Supported source scopes:
 
