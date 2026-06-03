@@ -4,6 +4,7 @@ import { createDiagnostic } from './diagnostics.js';
 import { loadModel } from './load-model.js';
 import { RESERVED_TOP_LEVEL_FIELDS } from './rules.js';
 import { createReferenceStats, createValidationSummary } from './summary.js';
+import { validateNonEmptyArray, validateOptionalArray, validateOptionalString, validateRequiredArray } from './shapes.js';
 import {
   getValueAtPath,
   isPlainObject,
@@ -37,11 +38,26 @@ function validateIdentity(entity) {
 }
 
 function validateWorkflow(entity, index, stats) {
-  const diagnostics = [
-    ...validateScalarReferenceField({ entity, index, fieldPath: 'roles.primary', pathSegments: ['roles', 'primary'], targetScope: 'roles', stats }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'roles.participants', pathSegments: ['roles', 'participants'], targetScope: 'roles', stats }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'triggered_by', pathSegments: ['triggered_by'], targetScope: 'events', stats }),
-  ];
+  const diagnostics = [];
+  const rolesPrimary = getValueAtPath(entity.document, ['roles', 'primary']);
+  const rolesParticipants = getValueAtPath(entity.document, ['roles', 'participants']);
+  const triggeredBy = getValueAtPath(entity.document, ['triggered_by']);
+
+  diagnostics.push(
+    ...validateOptionalString({ entity, path: 'roles.primary', value: rolesPrimary, message: 'expected a role reference string' }),
+    ...validateOptionalArray({ entity, path: 'roles.participants', value: rolesParticipants, message: 'expected an array of role references' }),
+    ...validateOptionalArray({ entity, path: 'triggered_by', value: triggeredBy, message: 'expected an array of event references' }),
+  );
+
+  if (typeof rolesPrimary === 'string') {
+    diagnostics.push(...validateScalarReferenceField({ entity, index, fieldPath: 'roles.primary', pathSegments: ['roles', 'primary'], targetScope: 'roles', stats }));
+  }
+  if (Array.isArray(rolesParticipants)) {
+    diagnostics.push(...validateArrayReferenceField({ entity, index, fieldPath: 'roles.participants', pathSegments: ['roles', 'participants'], targetScope: 'roles', stats }));
+  }
+  if (Array.isArray(triggeredBy)) {
+    diagnostics.push(...validateArrayReferenceField({ entity, index, fieldPath: 'triggered_by', pathSegments: ['triggered_by'], targetScope: 'events', stats }));
+  }
 
   for (const componentField of ['component', 'components']) {
     if (Object.hasOwn(entity.document, componentField)) {
@@ -54,92 +70,220 @@ function validateWorkflow(entity, index, stats) {
   }
 
   const steps = getValueAtPath(entity.document, ['steps']);
-  if (steps !== undefined) {
-    if (!Array.isArray(steps)) {
-      diagnostics.push(createDiagnostic({
-        file: entity.file,
-        path: 'steps',
-        message: 'expected an array of capability references',
-      }));
-    } else {
-      steps.forEach((step, stepIndex) => {
-        const fieldPath = `steps[${stepIndex}]`;
-        if (isPlainObject(step)) {
-          diagnostics.push(createDiagnostic({
-            file: entity.file,
-            path: fieldPath,
-            message: 'object workflow steps are experimental and unsupported by this validator',
-          }));
-          return;
-        }
+  diagnostics.push(...validateRequiredArray({
+    entity,
+    path: 'steps',
+    value: steps,
+    missingMessage: 'required field "steps" is missing',
+    invalidMessage: 'expected a non-empty array of capability references',
+  }));
 
-        diagnostics.push(...validateReference({
-          entity,
-          index,
+  if (Array.isArray(steps)) {
+    diagnostics.push(...validateNonEmptyArray({
+      entity,
+      path: 'steps',
+      value: steps,
+      message: 'expected a non-empty array of capability references',
+    }));
+
+    steps.forEach((step, stepIndex) => {
+      const fieldPath = `steps[${stepIndex}]`;
+      if (isPlainObject(step)) {
+        diagnostics.push(createDiagnostic({
+          file: entity.file,
           path: fieldPath,
-          value: step,
-          targetScope: 'capabilities',
-          stats,
+          message: 'object workflow steps are experimental and unsupported by this validator',
         }));
-      });
-    }
+        return;
+      }
+
+      diagnostics.push(...validateReference({
+        entity,
+        index,
+        path: fieldPath,
+        value: step,
+        targetScope: 'capabilities',
+        stats,
+      }));
+    });
   }
 
   return diagnostics;
 }
 
 function validateCapability(entity, index, stats) {
-  return [
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'uses', pathSegments: ['uses'], targetScope: 'capabilities', stats }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'requires', pathSegments: ['requires'], targetScope: 'interfaces', stats }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'events', pathSegments: ['events'], targetScope: 'events', stats }),
+  const diagnostics = [];
+  const fields = [
+    { fieldPath: 'uses', pathSegments: ['uses'], targetScope: 'capabilities', message: 'expected an array of capability references' },
+    { fieldPath: 'requires', pathSegments: ['requires'], targetScope: 'interfaces', message: 'expected an array of interface references' },
+    { fieldPath: 'events', pathSegments: ['events'], targetScope: 'events', message: 'expected an array of event references' },
   ];
+
+  for (const field of fields) {
+    const value = getValueAtPath(entity.document, field.pathSegments);
+    diagnostics.push(...validateOptionalArray({ entity, path: field.fieldPath, value, message: field.message }));
+    if (Array.isArray(value)) {
+      diagnostics.push(...validateArrayReferenceField({ entity, index, ...field, stats }));
+    }
+  }
+
+  return diagnostics;
 }
 
 function validateComponent(entity, index, stats) {
-  return [
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'implements.capabilities', pathSegments: ['implements', 'capabilities'], targetScope: 'capabilities', stats }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'implements.interfaces', pathSegments: ['implements', 'interfaces'], targetScope: 'interfaces', stats }),
-    ...validateScalarReferenceField({ entity, index, fieldPath: 'belongs_to', pathSegments: ['belongs_to'], targetScope: 'modules', stats }),
-  ];
+  const diagnostics = [];
+  const implementsCapabilities = getValueAtPath(entity.document, ['implements', 'capabilities']);
+  const implementsInterfaces = getValueAtPath(entity.document, ['implements', 'interfaces']);
+  const belongsTo = getValueAtPath(entity.document, ['belongs_to']);
+
+  diagnostics.push(
+    ...validateOptionalArray({ entity, path: 'implements.capabilities', value: implementsCapabilities, message: 'expected an array of capability references' }),
+    ...validateOptionalArray({ entity, path: 'implements.interfaces', value: implementsInterfaces, message: 'expected an array of interface references' }),
+    ...validateOptionalString({ entity, path: 'belongs_to', value: belongsTo, message: 'expected a module reference string' }),
+  );
+
+  if (Array.isArray(implementsCapabilities)) {
+    diagnostics.push(...validateArrayReferenceField({ entity, index, fieldPath: 'implements.capabilities', pathSegments: ['implements', 'capabilities'], targetScope: 'capabilities', stats }));
+  }
+  if (Array.isArray(implementsInterfaces)) {
+    diagnostics.push(...validateArrayReferenceField({ entity, index, fieldPath: 'implements.interfaces', pathSegments: ['implements', 'interfaces'], targetScope: 'interfaces', stats }));
+  }
+  if (typeof belongsTo === 'string') {
+    diagnostics.push(...validateScalarReferenceField({ entity, index, fieldPath: 'belongs_to', pathSegments: ['belongs_to'], targetScope: 'modules', stats }));
+  }
+
+  return diagnostics;
+}
+
+function validateTransitionStateReference({ entity, path, value, declaredStates }) {
+  if (typeof value === 'string') {
+    if (declaredStates && !declaredStates.has(value)) {
+      return [createDiagnostic({
+        file: entity.file,
+        path,
+        message: `state "${value}" is not declared in states`,
+      })];
+    }
+    return [];
+  }
+
+  return [createDiagnostic({
+    file: entity.file,
+    path,
+    message: 'expected transition state to be a string',
+  })];
+}
+
+function validateTransitionFrom({ entity, path, value, declaredStates }) {
+  if (Array.isArray(value)) {
+    const diagnostics = validateNonEmptyArray({
+      entity,
+      path,
+      value,
+      message: 'expected transition from state to be a string or non-empty array of strings',
+    });
+
+    value.forEach((state, stateIndex) => {
+      diagnostics.push(...validateTransitionStateReference({
+        entity,
+        path: `${path}[${stateIndex}]`,
+        value: state,
+        declaredStates,
+      }));
+    });
+
+    return diagnostics;
+  }
+
+  if (typeof value === 'string') {
+    return validateTransitionStateReference({ entity, path, value, declaredStates });
+  }
+
+  return [createDiagnostic({
+    file: entity.file,
+    path,
+    message: 'expected transition from state to be a string or non-empty array of strings',
+  })];
+}
+
+function validateTransitionTo({ entity, path, value, declaredStates }) {
+  if (typeof value !== 'string') {
+    return [createDiagnostic({
+      file: entity.file,
+      path,
+      message: 'expected transition to state to be a string',
+    })];
+  }
+
+  return validateTransitionStateReference({ entity, path, value, declaredStates });
 }
 
 function validateStateMachine(entity, index, stats) {
   const diagnostics = [
     ...validateScalarReferenceField({ entity, index, fieldPath: 'entity', pathSegments: ['entity'], targetScope: 'entities', stats }),
   ];
+  const states = getValueAtPath(entity.document, ['states']);
   const transitions = getValueAtPath(entity.document, ['transitions']);
+  const declaredStates = Array.isArray(states)
+    ? new Set(states.filter((state) => typeof state === 'string'))
+    : undefined;
 
-  if (transitions !== undefined) {
-    if (!Array.isArray(transitions)) {
-      diagnostics.push(createDiagnostic({
-        file: entity.file,
-        path: 'transitions',
-        message: 'expected an array of transitions',
+  diagnostics.push(
+    ...validateOptionalArray({ entity, path: 'states', value: states, message: 'expected an array of state names' }),
+    ...validateOptionalArray({ entity, path: 'transitions', value: transitions, message: 'expected an array of transitions' }),
+  );
+
+  if (Array.isArray(states)) {
+    states.forEach((state, stateIndex) => {
+      diagnostics.push(...validateOptionalString({
+        entity,
+        path: `states[${stateIndex}]`,
+        value: state,
+        message: 'expected state name to be a string',
       }));
-    } else {
-      transitions.forEach((transition, transitionIndex) => {
-        if (!isPlainObject(transition)) {
-          diagnostics.push(createDiagnostic({
-            file: entity.file,
-            path: `transitions[${transitionIndex}]`,
-            message: 'expected transition to be an object',
-          }));
-          return;
-        }
+    });
+  }
 
-        if (Object.hasOwn(transition, 'on')) {
-          diagnostics.push(...validateReference({
-            entity,
-            index,
-            path: `transitions[${transitionIndex}].on`,
-            value: transition.on,
-            targetScope: 'events',
-            stats,
-          }));
-        }
-      });
-    }
+  if (Array.isArray(transitions)) {
+    transitions.forEach((transition, transitionIndex) => {
+      if (!isPlainObject(transition)) {
+        diagnostics.push(createDiagnostic({
+          file: entity.file,
+          path: `transitions[${transitionIndex}]`,
+          message: 'expected transition to be an object',
+        }));
+        return;
+      }
+
+      if (Object.hasOwn(transition, 'from')) {
+        diagnostics.push(...validateTransitionFrom({
+          entity,
+          path: `transitions[${transitionIndex}].from`,
+          value: transition.from,
+          declaredStates,
+        }));
+      }
+
+      if (Object.hasOwn(transition, 'to')) {
+        diagnostics.push(...validateTransitionTo({
+          entity,
+          path: `transitions[${transitionIndex}].to`,
+          value: transition.to,
+          declaredStates,
+        }));
+      }
+
+      if (Object.hasOwn(transition, 'on')) {
+        diagnostics.push(...validateReference({
+          entity,
+          index,
+          path: `transitions[${transitionIndex}].on`,
+          value: transition.on,
+          targetScope: 'events',
+          stats,
+        }));
+      }
+    });
   }
 
   return diagnostics;
@@ -155,17 +299,26 @@ function validateDecision(entity, index, stats) {
     return [createDiagnostic({
       file: entity.file,
       path: 'affects',
-      message: 'expected an array of typed references',
+      message: 'expected a non-empty array of typed references',
     })];
   }
 
-  return affects.flatMap((item, itemIndex) => validateTypedReference({
+  const diagnostics = validateNonEmptyArray({
+    entity,
+    path: 'affects',
+    value: affects,
+    message: 'expected a non-empty array of typed references',
+  });
+
+  diagnostics.push(...affects.flatMap((item, itemIndex) => validateTypedReference({
     entity,
     index,
     path: `affects[${itemIndex}]`,
     value: item,
     stats,
-  }));
+  })));
+
+  return diagnostics;
 }
 
 function validateEntityReferences(entity, index, stats) {

@@ -195,3 +195,244 @@ test('does not count invalid typed reference syntax as checked', async () => {
     missing: 0,
   });
 });
+
+test('reports workflow missing steps', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/missing-steps.yaml': 'description: Missing steps.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/missing-steps.yaml',
+    path: 'steps',
+    message: 'required field "steps" is missing',
+  }]);
+});
+
+test('reports workflow empty steps', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/empty-steps.yaml': 'steps: []\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/empty-steps.yaml',
+    path: 'steps',
+    message: 'expected a non-empty array of capability references',
+  }]);
+});
+
+test('reports workflow non-array steps', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/non-array-steps.yaml': 'steps: connection/send_connection_close\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/non-array-steps.yaml',
+    path: 'steps',
+    message: 'expected a non-empty array of capability references',
+  }]);
+});
+
+test('reports capability reference field present but not an array', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/connection/send_connection_close.yaml': 'uses: connection/close_transport\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'capabilities/connection/send_connection_close.yaml',
+    path: 'uses',
+    message: 'expected an array of capability references',
+  }]);
+});
+
+test('reports component belongs_to present but not a string', async () => {
+  const modelDir = await createTempModel({
+    'components/transport/connection.yaml': 'belongs_to:\n  - modules/transport\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'components/transport/connection.yaml',
+    path: 'belongs_to',
+    message: 'expected a module reference string',
+  }]);
+});
+
+test('reports state machine transition from undeclared state', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - idle',
+      '  - connected',
+      'transitions:',
+      '  - from: handshaking',
+      '    to: connected',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'state-machines/connection/lifecycle.yaml',
+    path: 'transitions[0].from',
+    message: 'state "handshaking" is not declared in states',
+  }]);
+});
+
+test('reports state machine transition to undeclared state', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - idle',
+      '  - connected',
+      'transitions:',
+      '  - from: idle',
+      '    to: closed',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'state-machines/connection/lifecycle.yaml',
+    path: 'transitions[0].to',
+    message: 'state "closed" is not declared in states',
+  }]);
+});
+
+
+test('accepts state machine transition from as scalar string', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - idle',
+      '  - connected',
+      'transitions:',
+      '  - from: idle',
+      '    to: connected',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('accepts state machine transition from as non-empty array of strings', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - handshaking',
+      '  - connected',
+      '  - closing',
+      'transitions:',
+      '  - from:',
+      '      - handshaking',
+      '      - connected',
+      '    to: closing',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('reports state machine transition from as empty array', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - idle',
+      '  - connected',
+      'transitions:',
+      '  - from: []',
+      '    to: connected',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'state-machines/connection/lifecycle.yaml',
+    path: 'transitions[0].from',
+    message: 'expected transition from state to be a string or non-empty array of strings',
+  }]);
+});
+
+test('reports state machine transition from array item with undeclared state', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - idle',
+      '  - connected',
+      'transitions:',
+      '  - from:',
+      '      - idle',
+      '      - handshaking',
+      '    to: connected',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'state-machines/connection/lifecycle.yaml',
+    path: 'transitions[0].from[1]',
+    message: 'state "handshaking" is not declared in states',
+  }]);
+});
+
+test('reports state machine transition to as array', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - idle',
+      '  - connected',
+      'transitions:',
+      '  - from: idle',
+      '    to:',
+      '      - connected',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'state-machines/connection/lifecycle.yaml',
+    path: 'transitions[0].to',
+    message: 'expected transition to state to be a string',
+  }]);
+});
+
+test('reports decision affects present but empty', async () => {
+  const modelDir = await createTempModel({
+    'decisions/no-affects.yaml': 'affects: []\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'decisions/no-affects.yaml',
+    path: 'affects',
+    message: 'expected a non-empty array of typed references',
+  }]);
+});
