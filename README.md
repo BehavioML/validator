@@ -1,2 +1,5 @@
-# validator
-BehavioML model validator
+# BehavioML Validator
+
+Reference validator for BehavioML models.
+
+Status: Experimental
