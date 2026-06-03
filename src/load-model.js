@@ -12,10 +12,10 @@ function stripYamlExtension(value) {
   return value.replace(/\.ya?ml$/u, '');
 }
 
-async function pathExists(value) {
+async function directoryExists(value) {
   try {
-    await fs.access(value);
-    return true;
+    const stats = await fs.stat(value);
+    return stats.isDirectory();
   } catch {
     return false;
   }
@@ -45,7 +45,7 @@ export async function loadModel(modelDir) {
 
   for (const scope of SOURCE_SCOPES) {
     const scopeDir = path.join(absoluteModelDir, scope);
-    if (!await pathExists(scopeDir)) {
+    if (!await directoryExists(scopeDir)) {
       continue;
     }
 
