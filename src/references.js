@@ -20,7 +20,7 @@ export function isRelativeReference(value) {
   return value.startsWith('./') || value.startsWith('../') || value.includes('/../');
 }
 
-export function validateReference({ entity, index, path, value, targetScope }) {
+export function validateReference({ entity, index, path, value, targetScope, stats }) {
   const displayName = SCOPE_DISPLAY_NAMES[targetScope] ?? targetScope;
 
   if (typeof value !== 'string') {
@@ -39,7 +39,10 @@ export function validateReference({ entity, index, path, value, targetScope }) {
     })];
   }
 
+  stats.references.checked += 1;
+
   if (!index.get(targetScope)?.has(value)) {
+    stats.references.missing += 1;
     return [createDiagnostic({
       file: entity.file,
       path,
@@ -50,16 +53,16 @@ export function validateReference({ entity, index, path, value, targetScope }) {
   return [];
 }
 
-export function validateScalarReferenceField({ entity, index, fieldPath, pathSegments, targetScope }) {
+export function validateScalarReferenceField({ entity, index, fieldPath, pathSegments, targetScope, stats }) {
   const value = getValueAtPath(entity.document, pathSegments);
   if (value === undefined) {
     return [];
   }
 
-  return validateReference({ entity, index, path: fieldPath, value, targetScope });
+  return validateReference({ entity, index, path: fieldPath, value, targetScope, stats });
 }
 
-export function validateArrayReferenceField({ entity, index, fieldPath, pathSegments, targetScope }) {
+export function validateArrayReferenceField({ entity, index, fieldPath, pathSegments, targetScope, stats }) {
   const value = getValueAtPath(entity.document, pathSegments);
   if (value === undefined) {
     return [];
@@ -79,10 +82,11 @@ export function validateArrayReferenceField({ entity, index, fieldPath, pathSegm
     path: `${fieldPath}[${indexWithinArray}]`,
     value: item,
     targetScope,
+    stats,
   }));
 }
 
-export function validateTypedReference({ entity, index, path, value }) {
+export function validateTypedReference({ entity, index, path, value, stats }) {
   if (typeof value !== 'string') {
     return [createDiagnostic({
       file: entity.file,
@@ -126,7 +130,10 @@ export function validateTypedReference({ entity, index, path, value }) {
     })];
   }
 
+  stats.references.checked += 1;
+
   if (!index.get(scope)?.has(identity)) {
+    stats.references.missing += 1;
     const displayName = SCOPE_DISPLAY_NAMES[scope] ?? scope;
     return [createDiagnostic({
       file: entity.file,
