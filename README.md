@@ -53,6 +53,7 @@ The validator currently:
 - Derives entity identity from the file path inside the entity scope.
 - Rejects top-level `id`, `ids`, `uuid`, and `uuids` fields.
 - Builds an index of entities by scope and path identity.
+- Applies minimal entity shape checks for workflows, capabilities, components, state machines, and decisions.
 - Resolves semantic references by field type rather than filesystem-relative path.
 - Rejects filesystem-relative references beginning with `./`, beginning with `../`, or containing `/../`.
 
@@ -118,6 +119,10 @@ decisions
 URL-like typed references such as `events://handshake_failed` are rejected.
 
 Workflow `steps` currently support scalar string capability references only. Object steps are reported as experimental and unsupported rather than silently accepted.
+
+### Minimal shape checks
+
+The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks.
 
 ## What is not validated yet
 
