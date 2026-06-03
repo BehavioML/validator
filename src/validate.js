@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createDiagnostic } from './diagnostics.js';
 import { loadModel } from './load-model.js';
 import { RESERVED_TOP_LEVEL_FIELDS } from './rules.js';
+import { createCoverage } from './coverage.js';
 import { createReferenceStats, createValidationSummary } from './summary.js';
 import { validateNonEmptyArray, validateOptionalArray, validateOptionalString, validateRequiredArray } from './shapes.js';
 import {
@@ -354,6 +355,7 @@ export async function validateModel(modelDir) {
       entities: [],
       index: new Map(),
       summary: createValidationSummary(new Map(), createReferenceStats()),
+      coverage: createCoverage([], new Map()),
     };
   }
 
@@ -375,5 +377,6 @@ export async function validateModel(modelDir) {
     entities: loadedModel.entities,
     index: loadedModel.index,
     summary: createValidationSummary(loadedModel.index, stats),
+    coverage: createCoverage(loadedModel.entities, loadedModel.index),
   };
 }
