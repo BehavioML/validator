@@ -9,6 +9,44 @@ import { formatSummary, runCli, validateModel } from '../src/index.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(__dirname, 'fixtures');
 
+
+function coverageFixtureFiles() {
+  return {
+    'workflows/entry.yaml': 'steps:\n  - cap/used\n',
+    'workflows/triggered.yaml': 'roles:\n  primary: client\ntriggered_by:\n  - used_event\nsteps:\n  - cap/used\n',
+    'roles/client.yaml': 'description: Client role.\n',
+    'capabilities/cap/used.yaml': 'uses:\n  - cap/used_by_use\nrequires:\n  - req\nevents:\n  - used_event\n',
+    'capabilities/cap/no_events.yaml': 'description: Implemented helper.\n',
+    'capabilities/cap/used_by_use.yaml': 'events:\n  - transition_event\n',
+    'events/used_event.yaml': 'description: Used event.\n',
+    'events/transition_event.yaml': 'description: Transition event.\n',
+    'events/unused_event.yaml': 'description: Unused event.\n',
+    'interfaces/req.yaml': 'description: Required interface.\n',
+    'interfaces/impl.yaml': 'description: Implemented interface.\n',
+    'components/implemented.yaml': 'implements:\n  capabilities:\n    - cap/no_events\n  interfaces:\n    - impl\nbelongs_to: used\n',
+    'components/empty.yaml': 'description: Empty component.\n',
+    'modules/used.yaml': 'description: Used module.\n',
+    'modules/unused.yaml': 'description: Unused module.\n',
+    'entities/with_sm.yaml': 'description: Entity with state machine.\n',
+    'entities/without_sm.yaml': 'description: Entity without state machine.\n',
+    'state-machines/connection/lifecycle.yaml': [
+      'entity: with_sm',
+      'states:',
+      '  - idle',
+      '  - open',
+      '  - stranded',
+      'transitions:',
+      '  - from:',
+      '      - idle',
+      '    to: open',
+      '    on: transition_event',
+    ].join('\n'),
+    'state-machines/connection/empty.yaml': 'description: Empty state machine.\n',
+    'decisions/missing-affects.yaml': 'description: Missing affects.\n',
+    'decisions/with-affects.yaml': 'affects:\n  - events:used_event\n',
+  };
+}
+
 async function createTempModel(files) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'behavioml-validator-'));
   const modelDir = path.join(root, 'model');
@@ -179,7 +217,7 @@ test('prints summary on successful CLI validation', async () => {
   assert.equal(exitCode, 0);
   assert.equal(stderr, '');
   assert.match(stdout, /^BehavioML model is valid\.\n\nModel summary:/u);
-  assert.match(stdout, /References checked:\n  total:           5\n  missing:         0\n$/u);
+  assert.match(stdout, /References checked:\n  total:           5\n  missing:         0\n\nCoverage:\n  capabilities without events:\s+2\n$/u);
 });
 
 test('does not count invalid typed reference syntax as checked', async () => {
@@ -435,4 +473,120 @@ test('reports decision affects present but empty', async () => {
     path: 'affects',
     message: 'expected a non-empty array of typed references',
   }]);
+});
+
+test('reports coverage counts on a small fixture', async () => {
+  const modelDir = await createTempModel(coverageFixtureFiles());
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.deepEqual(result.coverage.counts, {
+    'workflows-without-explicit-trigger': 1,
+    'workflows-without-primary-role': 1,
+    'capabilities-without-events': 1,
+    'unused-events': 1,
+    'unused-capabilities': 0,
+    'interfaces-never-required': 1,
+    'interfaces-never-implemented': 1,
+    'components-without-implements': 1,
+    'components-without-module': 1,
+    'modules-without-components': 1,
+    'entities-without-state-machine': 1,
+    'state-machines-without-states': 1,
+    'state-machines-without-transitions': 1,
+    'unused-states': 1,
+    'decisions-without-affects': 1,
+  });
+});
+
+test('--warnings all prints detailed occurrences', async () => {
+  const modelDir = await createTempModel(coverageFixtureFiles());
+  let stdout = '';
+  let stderr = '';
+
+  const exitCode = await runCli([modelDir, '--warnings', 'all'], {
+    stdout: { write: (chunk) => { stdout += chunk; } },
+    stderr: { write: (chunk) => { stderr += chunk; } },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+  assert.match(stdout, /Warnings:\n\nworkflows without explicit trigger:\n  - workflows\/entry.yaml triggered_by/u);
+  assert.match(stdout, /unused capabilities:\n  none/u);
+  assert.match(stdout, /unused states:\n  - state-machines\/connection\/lifecycle.yaml states\[2\]/u);
+  assert.match(stdout, /decisions without affects:\n  - decisions\/missing-affects.yaml affects/u);
+});
+
+test('--warnings unused-events prints only unused events', async () => {
+  const modelDir = await createTempModel(coverageFixtureFiles());
+  let stdout = '';
+  let stderr = '';
+
+  const exitCode = await runCli([modelDir, '--warnings', 'unused-events'], {
+    stdout: { write: (chunk) => { stdout += chunk; } },
+    stderr: { write: (chunk) => { stderr += chunk; } },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+  assert.match(stdout, /Warnings:\n\nunused events:\n  - events\/unused_event.yaml/u);
+  const warningDetails = stdout.slice(stdout.indexOf('Warnings:'));
+  assert.doesNotMatch(warningDetails, /workflows without explicit trigger:/u);
+  assert.doesNotMatch(warningDetails, /capabilities without events:/u);
+});
+
+test('unknown warning category exits with code 2', async () => {
+  let stdout = '';
+  let stderr = '';
+
+  const exitCode = await runCli(['model', '--warnings', 'not-real'], {
+    stdout: { write: (chunk) => { stdout += chunk; } },
+    stderr: { write: (chunk) => { stderr += chunk; } },
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout, '');
+  assert.match(stderr, /Unknown warning category: not-real/u);
+  assert.match(stderr, /Supported warning categories:\n  all\n  workflows-without-explicit-trigger/u);
+});
+
+test('coverage warnings do not make a valid model invalid', async () => {
+  const modelDir = await createTempModel({
+    'workflows/entry.yaml': 'steps:\n  - helper\n',
+    'capabilities/helper.yaml': 'description: Internal helper.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.coverage.counts['workflows-without-explicit-trigger'], 1);
+  assert.equal(result.coverage.counts['capabilities-without-events'], 1);
+});
+
+test('unused-states handles array-valued transition from entries', async () => {
+  const modelDir = await createTempModel({
+    'state-machines/connection/lifecycle.yaml': [
+      'states:',
+      '  - handshaking',
+      '  - connected',
+      '  - closing',
+      '  - unused',
+      'transitions:',
+      '  - from:',
+      '      - handshaking',
+      '      - connected',
+      '    to: closing',
+    ].join('\n'),
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.deepEqual(
+    result.coverage.findings
+      .filter((finding) => finding.category === 'unused-states')
+      .map((finding) => ({ file: finding.file, path: finding.path })),
+    [{ file: 'state-machines/connection/lifecycle.yaml', path: 'states[3]' }],
+  );
 });

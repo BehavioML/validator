@@ -1,4 +1,5 @@
 export { runCli } from './cli.js';
+export { createCoverage, formatCoverageSummary, formatWarningDetails, WARNING_CATEGORIES, WARNING_CATEGORY_LABELS, WARNING_CATEGORY_ORDER } from './coverage.js';
 export { createDiagnostic, formatDiagnostic, formatDiagnostics, hasErrors } from './diagnostics.js';
 export { loadModel } from './load-model.js';
 export { createReferenceStats, createValidationSummary, formatSummary } from './summary.js';
