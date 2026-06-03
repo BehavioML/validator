@@ -1,0 +1,27 @@
+{
+  "name": "@behavioml/validator",
+  "version": "0.1.0",
+  "description": "Experimental validator for BehavioML model directories.",
+  "type": "module",
+  "bin": {
+    "behavioml-validate": "./bin/behavioml-validate.js"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "behavioml",
+    "validator",
+    "yaml"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "yaml": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,14 @@
+description: |
+  The client handles a failed handshake.
+
+roles:
+  primary: client
+  participants:
+    - server
+
+triggered_by:
+  - handshake_failed
+
+steps:
+  - connection/send_connection_close
+  - connection/discard_connection_state
