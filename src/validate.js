@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createDiagnostic } from './diagnostics.js';
 import { loadModel } from './load-model.js';
 import { RESERVED_TOP_LEVEL_FIELDS } from './rules.js';
+import { createReferenceStats, createValidationSummary } from './summary.js';
 import {
   getValueAtPath,
   isPlainObject,
@@ -35,11 +36,11 @@ function validateIdentity(entity) {
     }));
 }
 
-function validateWorkflow(entity, index) {
+function validateWorkflow(entity, index, stats) {
   const diagnostics = [
-    ...validateScalarReferenceField({ entity, index, fieldPath: 'roles.primary', pathSegments: ['roles', 'primary'], targetScope: 'roles' }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'roles.participants', pathSegments: ['roles', 'participants'], targetScope: 'roles' }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'triggered_by', pathSegments: ['triggered_by'], targetScope: 'events' }),
+    ...validateScalarReferenceField({ entity, index, fieldPath: 'roles.primary', pathSegments: ['roles', 'primary'], targetScope: 'roles', stats }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'roles.participants', pathSegments: ['roles', 'participants'], targetScope: 'roles', stats }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'triggered_by', pathSegments: ['triggered_by'], targetScope: 'events', stats }),
   ];
 
   for (const componentField of ['component', 'components']) {
@@ -78,6 +79,7 @@ function validateWorkflow(entity, index) {
           path: fieldPath,
           value: step,
           targetScope: 'capabilities',
+          stats,
         }));
       });
     }
@@ -86,25 +88,25 @@ function validateWorkflow(entity, index) {
   return diagnostics;
 }
 
-function validateCapability(entity, index) {
+function validateCapability(entity, index, stats) {
   return [
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'uses', pathSegments: ['uses'], targetScope: 'capabilities' }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'requires', pathSegments: ['requires'], targetScope: 'interfaces' }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'events', pathSegments: ['events'], targetScope: 'events' }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'uses', pathSegments: ['uses'], targetScope: 'capabilities', stats }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'requires', pathSegments: ['requires'], targetScope: 'interfaces', stats }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'events', pathSegments: ['events'], targetScope: 'events', stats }),
   ];
 }
 
-function validateComponent(entity, index) {
+function validateComponent(entity, index, stats) {
   return [
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'implements.capabilities', pathSegments: ['implements', 'capabilities'], targetScope: 'capabilities' }),
-    ...validateArrayReferenceField({ entity, index, fieldPath: 'implements.interfaces', pathSegments: ['implements', 'interfaces'], targetScope: 'interfaces' }),
-    ...validateScalarReferenceField({ entity, index, fieldPath: 'belongs_to', pathSegments: ['belongs_to'], targetScope: 'modules' }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'implements.capabilities', pathSegments: ['implements', 'capabilities'], targetScope: 'capabilities', stats }),
+    ...validateArrayReferenceField({ entity, index, fieldPath: 'implements.interfaces', pathSegments: ['implements', 'interfaces'], targetScope: 'interfaces', stats }),
+    ...validateScalarReferenceField({ entity, index, fieldPath: 'belongs_to', pathSegments: ['belongs_to'], targetScope: 'modules', stats }),
   ];
 }
 
-function validateStateMachine(entity, index) {
+function validateStateMachine(entity, index, stats) {
   const diagnostics = [
-    ...validateScalarReferenceField({ entity, index, fieldPath: 'entity', pathSegments: ['entity'], targetScope: 'entities' }),
+    ...validateScalarReferenceField({ entity, index, fieldPath: 'entity', pathSegments: ['entity'], targetScope: 'entities', stats }),
   ];
   const transitions = getValueAtPath(entity.document, ['transitions']);
 
@@ -133,6 +135,7 @@ function validateStateMachine(entity, index) {
             path: `transitions[${transitionIndex}].on`,
             value: transition.on,
             targetScope: 'events',
+            stats,
           }));
         }
       });
@@ -142,7 +145,7 @@ function validateStateMachine(entity, index) {
   return diagnostics;
 }
 
-function validateDecision(entity, index) {
+function validateDecision(entity, index, stats) {
   const affects = getValueAtPath(entity.document, ['affects']);
   if (affects === undefined) {
     return [];
@@ -161,25 +164,26 @@ function validateDecision(entity, index) {
     index,
     path: `affects[${itemIndex}]`,
     value: item,
+    stats,
   }));
 }
 
-function validateEntityReferences(entity, index) {
+function validateEntityReferences(entity, index, stats) {
   if (!isPlainObject(entity.document)) {
     return [];
   }
 
   switch (entity.scope) {
     case 'workflows':
-      return validateWorkflow(entity, index);
+      return validateWorkflow(entity, index, stats);
     case 'capabilities':
-      return validateCapability(entity, index);
+      return validateCapability(entity, index, stats);
     case 'components':
-      return validateComponent(entity, index);
+      return validateComponent(entity, index, stats);
     case 'state-machines':
-      return validateStateMachine(entity, index);
+      return validateStateMachine(entity, index, stats);
     case 'decisions':
-      return validateDecision(entity, index);
+      return validateDecision(entity, index, stats);
     default:
       return [];
   }
@@ -196,10 +200,12 @@ export async function validateModel(modelDir) {
       })],
       entities: [],
       index: new Map(),
+      summary: createValidationSummary(new Map(), createReferenceStats()),
     };
   }
 
   const loadedModel = await loadModel(absoluteModelDir);
+  const stats = createReferenceStats();
   const diagnostics = [...loadedModel.diagnostics];
 
   for (const entity of loadedModel.entities) {
@@ -207,7 +213,7 @@ export async function validateModel(modelDir) {
   }
 
   for (const entity of loadedModel.entities) {
-    diagnostics.push(...validateEntityReferences(entity, loadedModel.index));
+    diagnostics.push(...validateEntityReferences(entity, loadedModel.index, stats));
   }
 
   return {
@@ -215,5 +221,6 @@ export async function validateModel(modelDir) {
     diagnostics,
     entities: loadedModel.entities,
     index: loadedModel.index,
+    summary: createValidationSummary(loadedModel.index, stats),
   };
 }

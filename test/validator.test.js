@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { validateModel } from '../src/index.js';
+import { formatSummary, runCli, validateModel } from '../src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(__dirname, 'fixtures');
@@ -26,6 +26,24 @@ test('validates the valid minimal fixture', async () => {
 
   assert.equal(result.valid, true);
   assert.deepEqual(result.diagnostics, []);
+  assert.deepEqual(result.summary, {
+    scopes: {
+      workflows: 1,
+      roles: 2,
+      capabilities: 2,
+      interfaces: 0,
+      components: 0,
+      modules: 0,
+      events: 1,
+      entities: 0,
+      'state-machines': 0,
+      decisions: 0,
+    },
+    references: {
+      checked: 5,
+      missing: 0,
+    },
+  });
 });
 
 test('reports a missing workflow step capability reference', async () => {
@@ -39,6 +57,10 @@ test('reports a missing workflow step capability reference', async () => {
     file: 'workflows/client/handle_handshake_failure.yaml',
     path: 'steps[0]',
     message: 'missing capability "connection/missing_capability"',
+  });
+  assert.deepEqual(result.summary.references, {
+    checked: 4,
+    missing: 1,
   });
 });
 
@@ -102,4 +124,74 @@ test('reports unsupported object workflow steps', async () => {
   assert.equal(result.diagnostics.length, 1);
   assert.equal(result.diagnostics[0].path, 'steps[0]');
   assert.match(result.diagnostics[0].message, /unsupported/u);
+});
+
+
+test('formats validation summaries as plain text', () => {
+  const output = formatSummary({
+    scopes: {
+      workflows: 1,
+      roles: 2,
+      capabilities: 2,
+      interfaces: 0,
+      components: 0,
+      modules: 0,
+      events: 1,
+      entities: 0,
+      'state-machines': 0,
+      decisions: 0,
+    },
+    references: {
+      checked: 5,
+      missing: 0,
+    },
+  });
+
+  assert.equal(output, [
+    'Model summary:',
+    '  workflows:       1',
+    '  roles:           2',
+    '  capabilities:    2',
+    '  interfaces:      0',
+    '  components:      0',
+    '  modules:         0',
+    '  events:          1',
+    '  entities:        0',
+    '  state-machines:  0',
+    '  decisions:       0',
+    '',
+    'References checked:',
+    '  total:           5',
+    '  missing:         0',
+  ].join('\n'));
+});
+
+test('prints summary on successful CLI validation', async () => {
+  const modelDir = path.join(fixturesDir, 'valid-minimal', 'model');
+  let stdout = '';
+  let stderr = '';
+
+  const exitCode = await runCli([modelDir], {
+    stdout: { write: (chunk) => { stdout += chunk; } },
+    stderr: { write: (chunk) => { stderr += chunk; } },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr, '');
+  assert.match(stdout, /^BehavioML model is valid\.\n\nModel summary:/u);
+  assert.match(stdout, /References checked:\n  total:           5\n  missing:         0\n$/u);
+});
+
+test('does not count invalid typed reference syntax as checked', async () => {
+  const modelDir = await createTempModel({
+    'decisions/bad.yaml': 'affects:\n  - events://handshake_failed\n',
+    'events/handshake_failed.yaml': 'description: Handshake failed.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.summary.references, {
+    checked: 0,
+    missing: 0,
+  });
 });

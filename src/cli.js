@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { formatDiagnostics, hasErrors } from './diagnostics.js';
+import { formatSummary } from './summary.js';
 import { validateModel } from './validate.js';
 
 function usage() {
@@ -24,6 +25,6 @@ export async function runCli(args, { cwd = process.cwd(), stdout = process.stdou
     return result.entities.length === 0 && result.diagnostics.some((diagnostic) => diagnostic.message.startsWith('model directory does not exist')) ? 2 : 1;
   }
 
-  stdout.write('BehavioML model is valid.\n');
+  stdout.write(`BehavioML model is valid.\n\n${formatSummary(result.summary)}\n`);
   return 0;
 }
