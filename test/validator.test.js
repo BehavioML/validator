@@ -3,9 +3,11 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { validateModel } from '../src/index.js';
 
-const fixturesDir = path.join(import.meta.dirname, 'fixtures');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const fixturesDir = path.join(__dirname, 'fixtures');
 
 async function createTempModel(files) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'behavioml-validator-'));
@@ -38,6 +40,17 @@ test('reports a missing workflow step capability reference', async () => {
     path: 'steps[0]',
     message: 'missing capability "connection/missing_capability"',
   });
+});
+
+test('ignores non-directory top-level scope entries', async () => {
+  const modelDir = await createTempModel({
+    workflows: 'not a directory\n',
+    'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
 });
 
 test('rejects reserved top-level identity fields', async () => {
