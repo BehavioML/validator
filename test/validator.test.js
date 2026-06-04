@@ -151,19 +151,229 @@ test('rejects invalid decision polymorphic references', async () => {
   assert.match(result.diagnostics[0].message, /URL-like syntax/u);
 });
 
-test('reports unsupported object workflow steps', async () => {
+test('keeps legacy string workflow steps valid', async () => {
   const modelDir = await createTempModel({
-    'workflows/client/object-step.yaml': 'steps:\n  - capability: connection/send_connection_close\n',
+    'workflows/client/legacy-step.yaml': 'steps:\n  - connection/send_connection_close\n',
+    'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('accepts object workflow step with from and to roles', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - from: client',
+      '    to: server',
+      '    capability: connection/send_connection_close',
+      '    label: Send close alert',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'roles/server.yaml': 'description: Server role.\n',
+    'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('accepts object workflow step with from only', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - from: client',
+      '    capability: connection/discard_connection_state',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('reports object workflow step missing capability', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - from: client',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].capability',
+    message: 'required field "capability" is missing',
+  }]);
+});
+
+test('reports object workflow step missing from', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - capability: connection/send_connection_close',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
     'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
   });
   const result = await validateModel(modelDir);
 
   assert.equal(result.valid, false);
-  assert.equal(result.diagnostics.length, 1);
-  assert.equal(result.diagnostics[0].path, 'steps[0]');
-  assert.match(result.diagnostics[0].message, /unsupported/u);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].from',
+    message: 'required field "from" is missing',
+  }]);
 });
 
+test('reports object workflow step to without from', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - to: server',
+      '    capability: connection/send_connection_close',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'roles/server.yaml': 'description: Server role.\n',
+    'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].from',
+    message: 'required field "from" is missing',
+  }, {
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].to',
+    message: 'field "to" requires field "from"',
+  }]);
+});
+
+test('reports object workflow step with invalid from role', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - from: server',
+      '    capability: connection/send_connection_close',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'roles/server.yaml': 'description: Server role.\n',
+    'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].from',
+    message: 'workflow step role "server" is not declared in roles.primary or roles.participants',
+  }]);
+});
+
+test('reports object workflow step with invalid to role', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - from: client',
+      '    to: server',
+      '    capability: connection/send_connection_close',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'roles/server.yaml': 'description: Server role.\n',
+    'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].to',
+    message: 'workflow step role "server" is not declared in roles.primary or roles.participants',
+  }]);
+});
+
+test('reports object workflow step with at field', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - at: client',
+      '    from: client',
+      '    capability: connection/discard_connection_state',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].at',
+    message: 'workflow object steps must use "from"; field "at" is not supported',
+  }]);
+});
+
+test('reports object workflow step with non-string label', async () => {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      '  - from: client',
+      '    capability: connection/discard_connection_state',
+      '    label:',
+      '      text: Discard connection state',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].label',
+    message: 'expected label to be a string',
+  }]);
+});
 
 test('formats validation summaries as plain text', () => {
   const output = formatSummary({
