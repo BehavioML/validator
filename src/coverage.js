@@ -100,6 +100,31 @@ function addSetItems(target, source) {
   }
 }
 
+function collectWorkflowStepCapabilities(entities) {
+  const referenced = new Set();
+
+  for (const entity of entities) {
+    if (entity.scope !== 'workflows' || !isPlainObject(entity.document)) {
+      continue;
+    }
+
+    const steps = getValueAtPath(entity.document, ['steps']);
+    if (!Array.isArray(steps)) {
+      continue;
+    }
+
+    for (const step of steps) {
+      if (typeof step === 'string') {
+        referenced.add(step);
+      } else if (isPlainObject(step) && typeof step.capability === 'string') {
+        referenced.add(step.capability);
+      }
+    }
+  }
+
+  return referenced;
+}
+
 function collectTransitionEventReferences(entities) {
   const referenced = new Set();
 
@@ -185,7 +210,7 @@ export function createCoverage(entities, index) {
     }
   }
 
-  const referencedCapabilities = collectReferencedStrings(entities, 'workflows', ['steps']);
+  const referencedCapabilities = collectWorkflowStepCapabilities(entities);
   addSetItems(referencedCapabilities, collectReferencedStrings(entities, 'capabilities', ['uses']));
   addSetItems(referencedCapabilities, collectReferencedStrings(entities, 'components', ['implements', 'capabilities']));
 

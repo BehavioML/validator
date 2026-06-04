@@ -38,11 +38,114 @@ function validateIdentity(entity) {
     }));
 }
 
+function workflowRoleReferences(primary, participants) {
+  const roles = new Set();
+  if (typeof primary === 'string') {
+    roles.add(primary);
+  }
+  if (Array.isArray(participants)) {
+    participants.filter((participant) => typeof participant === 'string').forEach((participant) => roles.add(participant));
+  }
+  return roles;
+}
+
+function validateWorkflowStepRole({ entity, path, value, declaredRoles }) {
+  if (typeof value !== 'string') {
+    return [createDiagnostic({
+      file: entity.file,
+      path,
+      message: 'expected role reference to be a string',
+    })];
+  }
+
+  if (!declaredRoles.has(value)) {
+    return [createDiagnostic({
+      file: entity.file,
+      path,
+      message: `workflow step role "${value}" is not declared in roles.primary or roles.participants`,
+    })];
+  }
+
+  return [];
+}
+
+function validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, declaredRoles }) {
+  const diagnostics = [];
+  const fieldPath = `steps[${stepIndex}]`;
+
+  if (Object.hasOwn(step, 'at')) {
+    diagnostics.push(createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.at`,
+      message: 'workflow object steps must use "from"; field "at" is not supported',
+    }));
+  }
+
+  if (!Object.hasOwn(step, 'capability')) {
+    diagnostics.push(createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.capability`,
+      message: 'required field "capability" is missing',
+    }));
+  } else {
+    diagnostics.push(...validateReference({
+      entity,
+      index,
+      path: `${fieldPath}.capability`,
+      value: step.capability,
+      targetScope: 'capabilities',
+      stats,
+    }));
+  }
+
+  if (!Object.hasOwn(step, 'from')) {
+    diagnostics.push(createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.from`,
+      message: 'required field "from" is missing',
+    }));
+
+    if (Object.hasOwn(step, 'to')) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: `${fieldPath}.to`,
+        message: 'field "to" requires field "from"',
+      }));
+    }
+  } else {
+    diagnostics.push(...validateWorkflowStepRole({
+      entity,
+      path: `${fieldPath}.from`,
+      value: step.from,
+      declaredRoles,
+    }));
+  }
+
+  if (Object.hasOwn(step, 'to') && Object.hasOwn(step, 'from')) {
+    diagnostics.push(...validateWorkflowStepRole({
+      entity,
+      path: `${fieldPath}.to`,
+      value: step.to,
+      declaredRoles,
+    }));
+  }
+
+  diagnostics.push(...validateOptionalString({
+    entity,
+    path: `${fieldPath}.label`,
+    value: step.label,
+    message: 'expected label to be a string',
+  }));
+
+  return diagnostics;
+}
+
 function validateWorkflow(entity, index, stats) {
   const diagnostics = [];
   const rolesPrimary = getValueAtPath(entity.document, ['roles', 'primary']);
   const rolesParticipants = getValueAtPath(entity.document, ['roles', 'participants']);
   const triggeredBy = getValueAtPath(entity.document, ['triggered_by']);
+  const declaredRoles = workflowRoleReferences(rolesPrimary, rolesParticipants);
 
   diagnostics.push(
     ...validateOptionalString({ entity, path: 'roles.primary', value: rolesPrimary, message: 'expected a role reference string' }),
@@ -90,11 +193,7 @@ function validateWorkflow(entity, index, stats) {
     steps.forEach((step, stepIndex) => {
       const fieldPath = `steps[${stepIndex}]`;
       if (isPlainObject(step)) {
-        diagnostics.push(createDiagnostic({
-          file: entity.file,
-          path: fieldPath,
-          message: 'object workflow steps are experimental and unsupported by this validator',
-        }));
+        diagnostics.push(...validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, declaredRoles }));
         return;
       }
 
