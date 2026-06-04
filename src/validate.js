@@ -211,10 +211,64 @@ function validateWorkflow(entity, index, stats) {
   return diagnostics;
 }
 
-function validateCapability(entity, index, stats) {
+function validateCapabilityUses(entity, index, stats) {
   const diagnostics = [];
+  const uses = getValueAtPath(entity.document, ['uses']);
+
+  diagnostics.push(...validateOptionalArray({
+    entity,
+    path: 'uses',
+    value: uses,
+    message: 'expected an array of capability references',
+  }));
+
+  if (!Array.isArray(uses)) {
+    return diagnostics;
+  }
+
+  const seen = new Map();
+  uses.forEach((usedCapability, useIndex) => {
+    const usePath = `uses[${useIndex}]`;
+    diagnostics.push(...validateReference({
+      entity,
+      index,
+      path: usePath,
+      value: usedCapability,
+      targetScope: 'capabilities',
+      stats,
+    }));
+
+    if (typeof usedCapability !== 'string') {
+      return;
+    }
+
+    if (usedCapability === entity.identity) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: usePath,
+        message: `capability must not directly use itself: "${usedCapability}"`,
+      }));
+    }
+
+    if (seen.has(usedCapability)) {
+      diagnostics.push(createDiagnostic({
+        severity: 'warning',
+        file: entity.file,
+        path: usePath,
+        message: `duplicate capability use "${usedCapability}"; Capability.uses is ordered, but duplicate direct uses are likely accidental`,
+      }));
+      return;
+    }
+
+    seen.set(usedCapability, useIndex);
+  });
+
+  return diagnostics;
+}
+
+function validateCapability(entity, index, stats) {
+  const diagnostics = validateCapabilityUses(entity, index, stats);
   const fields = [
-    { fieldPath: 'uses', pathSegments: ['uses'], targetScope: 'capabilities', message: 'expected an array of capability references' },
     { fieldPath: 'requires', pathSegments: ['requires'], targetScope: 'interfaces', message: 'expected an array of interface references' },
     { fieldPath: 'events', pathSegments: ['events'], targetScope: 'events', message: 'expected an array of event references' },
   ];
@@ -421,6 +475,193 @@ function validateDecision(entity, index, stats) {
   return diagnostics;
 }
 
+
+function getCapabilityUsesGraph(entities, index) {
+  const capabilityIndex = index.get('capabilities') ?? new Map();
+  const graph = new Map();
+
+  for (const entity of entities) {
+    if (entity.scope !== 'capabilities' || !isPlainObject(entity.document)) {
+      continue;
+    }
+
+    const uses = getValueAtPath(entity.document, ['uses']);
+    if (!Array.isArray(uses)) {
+      graph.set(entity.identity, []);
+      continue;
+    }
+
+    const usableReferences = uses.filter((usedCapability) => (
+      typeof usedCapability === 'string'
+      && usedCapability !== entity.identity
+      && capabilityIndex.has(usedCapability)
+    ));
+    graph.set(entity.identity, [...new Set(usableReferences)]);
+  }
+
+  return graph;
+}
+
+function canonicalCycleKey(cycleNodes) {
+  const rotations = cycleNodes.map((_, index) => [
+    ...cycleNodes.slice(index),
+    ...cycleNodes.slice(0, index),
+  ].join('\u0000'));
+  return rotations.sort()[0];
+}
+
+function validateCapabilityUsesCycles(entities, index) {
+  const diagnostics = [];
+  const graph = getCapabilityUsesGraph(entities, index);
+  const capabilityIndex = index.get('capabilities') ?? new Map();
+  const state = new Map();
+  const stack = [];
+  const stackPositions = new Map();
+  const emittedCycles = new Set();
+
+  function visit(identity) {
+    state.set(identity, 'visiting');
+    stackPositions.set(identity, stack.length);
+    stack.push(identity);
+
+    for (const nextIdentity of graph.get(identity) ?? []) {
+      if (!graph.has(nextIdentity)) {
+        continue;
+      }
+
+      if (state.get(nextIdentity) === 'visiting') {
+        const cycleNodes = stack.slice(stackPositions.get(nextIdentity));
+        const cycleKey = canonicalCycleKey(cycleNodes);
+        if (!emittedCycles.has(cycleKey)) {
+          emittedCycles.add(cycleKey);
+          const cyclePath = [...cycleNodes, nextIdentity].join(' -> ');
+          const cycleStart = capabilityIndex.get(cycleNodes[0]);
+          diagnostics.push(createDiagnostic({
+            severity: 'warning',
+            file: cycleStart?.file ?? '',
+            path: 'uses',
+            message: `capability uses cycle detected: ${cyclePath}`,
+          }));
+        }
+        continue;
+      }
+
+      if (state.get(nextIdentity) !== 'visited') {
+        visit(nextIdentity);
+      }
+    }
+
+    stack.pop();
+    stackPositions.delete(identity);
+    state.set(identity, 'visited');
+  }
+
+  for (const identity of graph.keys()) {
+    if (!state.has(identity)) {
+      visit(identity);
+    }
+  }
+
+  return diagnostics;
+}
+
+function workflowStepCapability(step) {
+  if (typeof step === 'string') {
+    return step;
+  }
+
+  if (isPlainObject(step) && typeof step.capability === 'string') {
+    return step.capability;
+  }
+
+  return undefined;
+}
+
+function workflowStepCapabilityPath(step, stepIndex) {
+  return isPlainObject(step) ? `steps[${stepIndex}].capability` : `steps[${stepIndex}]`;
+}
+
+function createCapabilityReachability(graph) {
+  const cache = new Map();
+
+  function reachableFrom(identity) {
+    if (cache.has(identity)) {
+      return cache.get(identity);
+    }
+
+    const reachable = new Set();
+    cache.set(identity, reachable);
+
+    function visit(current) {
+      for (const next of graph.get(current) ?? []) {
+        if (reachable.has(next)) {
+          continue;
+        }
+        reachable.add(next);
+        visit(next);
+      }
+    }
+
+    visit(identity);
+    return reachable;
+  }
+
+  return (source, target) => reachableFrom(source).has(target);
+}
+
+function validateWorkflowCapabilityDecompositionOverlap(entities, index) {
+  const diagnostics = [];
+  const graph = getCapabilityUsesGraph(entities, index);
+  const reaches = createCapabilityReachability(graph);
+  const capabilityIndex = index.get('capabilities') ?? new Map();
+
+  for (const entity of entities) {
+    if (entity.scope !== 'workflows' || !isPlainObject(entity.document)) {
+      continue;
+    }
+
+    const steps = getValueAtPath(entity.document, ['steps']);
+    if (!Array.isArray(steps)) {
+      continue;
+    }
+
+    const capabilitySteps = steps
+      .map((step, stepIndex) => ({
+        identity: workflowStepCapability(step),
+        path: workflowStepCapabilityPath(step, stepIndex),
+      }))
+      .filter(({ identity }) => typeof identity === 'string' && capabilityIndex.has(identity));
+
+    for (let leftIndex = 0; leftIndex < capabilitySteps.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < capabilitySteps.length; rightIndex += 1) {
+        const left = capabilitySteps[leftIndex];
+        const right = capabilitySteps[rightIndex];
+        if (left.identity === right.identity) {
+          continue;
+        }
+
+        if (reaches(left.identity, right.identity)) {
+          diagnostics.push(createDiagnostic({
+            severity: 'warning',
+            file: entity.file,
+            path: right.path,
+            message: `workflow step capability "${right.identity}" is also internal decomposition of step capability "${left.identity}"`,
+          }));
+        } else if (reaches(right.identity, left.identity)) {
+          diagnostics.push(createDiagnostic({
+            severity: 'warning',
+            file: entity.file,
+            path: right.path,
+            message: `workflow step capability "${left.identity}" is also internal decomposition of step capability "${right.identity}"`,
+          }));
+        }
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
 function validateEntityReferences(entity, index, stats) {
   if (!isPlainObject(entity.document)) {
     return [];
@@ -469,6 +710,9 @@ export async function validateModel(modelDir) {
   for (const entity of loadedModel.entities) {
     diagnostics.push(...validateEntityReferences(entity, loadedModel.index, stats));
   }
+
+  diagnostics.push(...validateCapabilityUsesCycles(loadedModel.entities, loadedModel.index));
+  diagnostics.push(...validateWorkflowCapabilityDecompositionOverlap(loadedModel.entities, loadedModel.index));
 
   return {
     valid: diagnostics.every((diagnostic) => diagnostic.severity !== 'error'),

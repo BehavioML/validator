@@ -113,6 +113,7 @@ The validator currently:
 - Resolves semantic references by field type rather than filesystem-relative path.
 - Rejects filesystem-relative references beginning with `./`, beginning with `../`, or containing `/../`.
 - Reports informational coverage findings separately from validation diagnostics.
+- Treats `Capability.uses` as an ordered internal decomposition list and validates entries as capability references.
 
 Supported source scopes:
 
@@ -145,7 +146,7 @@ The MVP validates these reference fields:
   - `steps[] -> capabilities/`
   - `triggered_by[] -> events/`
 - Capability:
-  - `uses[] -> capabilities/`
+  - `uses[] -> capabilities/` (ordered internal decomposition; order is preserved by parsers/tools)
   - `requires[] -> interfaces/`
   - `events[] -> events/`
 - Component:
@@ -179,7 +180,11 @@ Workflow `steps` currently support scalar string capability references only. Obj
 
 ### Minimal shape checks
 
-The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks.
+The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. Capability `uses` entries are ordered and validated as capability references; direct self-use is rejected. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks.
+
+### Structural warnings
+
+The validator emits non-blocking diagnostics with `warning` severity for structural modeling risks that should not make exploratory models invalid yet. Current `Capability.uses` warnings include duplicate direct uses, cycles in the directed `uses` graph, and workflows that include one capability as a top-level step while another step directly or transitively uses it as internal decomposition. Capability cycle detection is warning-level because cycles are risky for recursive generator/codegen expansion, but BehavioML modeling remains exploratory and should not become too strict prematurely.
 
 ## What is not validated yet
 
