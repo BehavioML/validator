@@ -9,6 +9,7 @@ import { validateNonEmptyArray, validateOptionalArray, validateOptionalString, v
 import {
   getValueAtPath,
   isPlainObject,
+  isRelativeReference,
   validateArrayReferenceField,
   validateReference,
   validateScalarReferenceField,
@@ -211,31 +212,62 @@ function validateWorkflow(entity, index, stats) {
   return diagnostics;
 }
 
+function validateCapabilityUseReference({ entity, index, stats, path: fieldPath, value }) {
+  if (typeof value !== 'string') {
+    return [createDiagnostic({
+      file: entity.file,
+      path: fieldPath,
+      message: 'Capability.uses entries must be strings',
+    })];
+  }
+
+  if (isRelativeReference(value)) {
+    return [createDiagnostic({
+      file: entity.file,
+      path: fieldPath,
+      message: 'Capability.uses reference must be a path identity, not a filesystem-relative reference',
+    })];
+  }
+
+  stats.references.checked += 1;
+
+  if (!index.get('capabilities')?.has(value)) {
+    stats.references.missing += 1;
+    return [createDiagnostic({
+      file: entity.file,
+      path: fieldPath,
+      message: 'Capability.uses reference does not resolve',
+    })];
+  }
+
+  return [];
+}
+
 function validateCapabilityUses(entity, index, stats) {
   const diagnostics = [];
   const uses = getValueAtPath(entity.document, ['uses']);
 
-  diagnostics.push(...validateOptionalArray({
-    entity,
-    path: 'uses',
-    value: uses,
-    message: 'expected an array of capability references',
-  }));
+  if (uses === undefined) {
+    return diagnostics;
+  }
 
   if (!Array.isArray(uses)) {
-    return diagnostics;
+    return [createDiagnostic({
+      file: entity.file,
+      path: 'uses',
+      message: 'Capability.uses must be an array',
+    })];
   }
 
   const seen = new Map();
   uses.forEach((usedCapability, useIndex) => {
     const usePath = `uses[${useIndex}]`;
-    diagnostics.push(...validateReference({
+    diagnostics.push(...validateCapabilityUseReference({
       entity,
       index,
+      stats,
       path: usePath,
       value: usedCapability,
-      targetScope: 'capabilities',
-      stats,
     }));
 
     if (typeof usedCapability !== 'string') {
@@ -246,7 +278,7 @@ function validateCapabilityUses(entity, index, stats) {
       diagnostics.push(createDiagnostic({
         file: entity.file,
         path: usePath,
-        message: `capability must not directly use itself: "${usedCapability}"`,
+        message: 'Capability must not directly use itself',
       }));
     }
 
@@ -255,7 +287,7 @@ function validateCapabilityUses(entity, index, stats) {
         severity: 'warning',
         file: entity.file,
         path: usePath,
-        message: `duplicate capability use "${usedCapability}"; Capability.uses is ordered, but duplicate direct uses are likely accidental`,
+        message: 'Capability.uses contains duplicate capability reference',
       }));
       return;
     }
@@ -540,7 +572,7 @@ function validateCapabilityUsesCycles(entities, index) {
             severity: 'warning',
             file: cycleStart?.file ?? '',
             path: 'uses',
-            message: `capability uses cycle detected: ${cyclePath}`,
+            message: `Capability.uses cycle detected: ${cyclePath}`,
           }));
         }
         continue;
@@ -581,38 +613,9 @@ function workflowStepCapabilityPath(step, stepIndex) {
   return isPlainObject(step) ? `steps[${stepIndex}].capability` : `steps[${stepIndex}]`;
 }
 
-function createCapabilityReachability(graph) {
-  const cache = new Map();
-
-  function reachableFrom(identity) {
-    if (cache.has(identity)) {
-      return cache.get(identity);
-    }
-
-    const reachable = new Set();
-    cache.set(identity, reachable);
-
-    function visit(current) {
-      for (const next of graph.get(current) ?? []) {
-        if (reachable.has(next)) {
-          continue;
-        }
-        reachable.add(next);
-        visit(next);
-      }
-    }
-
-    visit(identity);
-    return reachable;
-  }
-
-  return (source, target) => reachableFrom(source).has(target);
-}
-
 function validateWorkflowCapabilityDecompositionOverlap(entities, index) {
   const diagnostics = [];
   const graph = getCapabilityUsesGraph(entities, index);
-  const reaches = createCapabilityReachability(graph);
   const capabilityIndex = index.get('capabilities') ?? new Map();
 
   for (const entity of entities) {
@@ -640,19 +643,19 @@ function validateWorkflowCapabilityDecompositionOverlap(entities, index) {
           continue;
         }
 
-        if (reaches(left.identity, right.identity)) {
+        if ((graph.get(right.identity) ?? []).includes(left.identity)) {
           diagnostics.push(createDiagnostic({
             severity: 'warning',
             file: entity.file,
             path: right.path,
-            message: `workflow step capability "${right.identity}" is also internal decomposition of step capability "${left.identity}"`,
+            message: `workflow step capability "${right.identity}" directly uses workflow step capability "${left.identity}"`,
           }));
-        } else if (reaches(right.identity, left.identity)) {
+        } else if ((graph.get(left.identity) ?? []).includes(right.identity)) {
           diagnostics.push(createDiagnostic({
             severity: 'warning',
             file: entity.file,
-            path: right.path,
-            message: `workflow step capability "${left.identity}" is also internal decomposition of step capability "${right.identity}"`,
+            path: left.path,
+            message: `workflow step capability "${left.identity}" directly uses workflow step capability "${right.identity}"`,
           }));
         }
       }
