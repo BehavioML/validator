@@ -800,3 +800,151 @@ test('unused-states handles array-valued transition from entries', async () => {
     [{ file: 'state-machines/connection/lifecycle.yaml', path: 'states[3]' }],
   );
 });
+
+test('accepts valid ordered capability uses list', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/validate_client\n  - oauth/issue_token\n',
+    'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
+    'capabilities/oauth/issue_token.yaml': 'description: Issue access token.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('reports non-array capability uses field', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/oauth/authorize_client.yaml': 'uses: oauth/validate_client\n',
+    'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'capabilities/oauth/authorize_client.yaml',
+    path: 'uses',
+    message: 'expected an array of capability references',
+  }]);
+});
+
+test('reports non-string capability uses entries', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - 42\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'capabilities/oauth/authorize_client.yaml',
+    path: 'uses[0]',
+    message: 'expected capability reference to be a string',
+  }]);
+});
+
+test('reports missing capability uses references', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/missing_capability\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'capabilities/oauth/authorize_client.yaml',
+    path: 'uses[0]',
+    message: 'missing capability "oauth/missing_capability"',
+  }]);
+});
+
+test('reports direct capability self-use', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/oauth/validate_client.yaml': 'uses:\n  - oauth/validate_client\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'capabilities/oauth/validate_client.yaml',
+    path: 'uses[0]',
+    message: 'capability must not directly use itself: "oauth/validate_client"',
+  }]);
+});
+
+test('warns for duplicate direct capability uses', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/validate_client\n  - oauth/validate_client\n',
+    'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'warning',
+    file: 'capabilities/oauth/authorize_client.yaml',
+    path: 'uses[1]',
+    message: 'duplicate capability use "oauth/validate_client"; Capability.uses is ordered, but duplicate direct uses are likely accidental',
+  }]);
+});
+
+test('warns for capability uses cycles with cycle path', async () => {
+  const modelDir = await createTempModel({
+    'capabilities/cycle/a.yaml': 'uses:\n  - cycle/b\n',
+    'capabilities/cycle/b.yaml': 'uses:\n  - cycle/c\n',
+    'capabilities/cycle/c.yaml': 'uses:\n  - cycle/a\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.equal(result.diagnostics.length, 1);
+  assert.deepEqual(result.diagnostics[0], {
+    severity: 'warning',
+    file: 'capabilities/cycle/a.yaml',
+    path: 'uses',
+    message: 'capability uses cycle detected: cycle/a -> cycle/b -> cycle/c -> cycle/a',
+  });
+});
+
+test('warns when workflow steps duplicate capability decomposition transitively', async () => {
+  const modelDir = await createTempModel({
+    'workflows/oauth/authorize.yaml': 'steps:\n  - oauth/authorize_client\n  - oauth/validate_client\n',
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/check_policy\n',
+    'capabilities/oauth/check_policy.yaml': 'uses:\n  - oauth/validate_client\n',
+    'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'warning',
+    file: 'workflows/oauth/authorize.yaml',
+    path: 'steps[1]',
+    message: 'workflow step capability "oauth/validate_client" is also internal decomposition of step capability "oauth/authorize_client"',
+  }]);
+});
+
+test('validates representative OAuth and QUIC capability uses examples', async () => {
+  const oauthModelDir = await createTempModel({
+    'workflows/oauth/authorize.yaml': 'steps:\n  - oauth/authorize_client\n',
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/validate_client\n  - oauth/issue_token\n',
+    'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
+    'capabilities/oauth/issue_token.yaml': 'description: Issue access token.\n',
+  });
+  const quicModelDir = await createTempModel({
+    'workflows/quic/establish_connection.yaml': 'steps:\n  - quic/complete_handshake\n',
+    'capabilities/quic/complete_handshake.yaml': 'uses:\n  - quic/validate_transport_parameters\n  - quic/derive_keys\n',
+    'capabilities/quic/validate_transport_parameters.yaml': 'description: Validate transport parameters.\n',
+    'capabilities/quic/derive_keys.yaml': 'description: Derive handshake keys.\n',
+  });
+
+  const oauthResult = await validateModel(oauthModelDir);
+  const quicResult = await validateModel(quicModelDir);
+
+  assert.equal(oauthResult.valid, true);
+  assert.deepEqual(oauthResult.diagnostics, []);
+  assert.equal(quicResult.valid, true);
+  assert.deepEqual(quicResult.diagnostics, []);
+});
