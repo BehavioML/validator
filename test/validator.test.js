@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { formatSummary, runCli, validateModel } from '../src/index.js';
+import { FilesystemWorkspace, InMemoryWorkspace, formatSummary, runCli, validateModel, validateWorkspace } from '../src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(__dirname, 'fixtures');
@@ -47,6 +47,15 @@ function coverageFixtureFiles() {
   };
 }
 
+
+async function readFixtureWorkspace(modelDir) {
+  const workspace = new FilesystemWorkspace(modelDir);
+  return Promise.all((await workspace.listFiles()).map(async (file) => ({
+    path: file,
+    content: await readFile(path.join(modelDir, file), 'utf8'),
+  })));
+}
+
 async function createTempModel(files) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'behavioml-validator-'));
   const modelDir = path.join(root, 'model');
@@ -57,6 +66,58 @@ async function createTempModel(files) {
   }
   return modelDir;
 }
+
+
+test('validates through the filesystem workspace provider', async () => {
+  const modelDir = path.join(fixturesDir, 'valid-minimal', 'model');
+  const result = await validateWorkspace(new FilesystemWorkspace(modelDir));
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.deepEqual(result.summary.references, {
+    checked: 5,
+    missing: 0,
+  });
+});
+
+test('validates through the in-memory workspace provider', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace([
+    {
+      path: 'workflows/client/handle_handshake_failure.yaml',
+      content: 'roles:\n  primary: client\n  participants:\n    - server\ntriggered_by:\n  - handshake_failed\nsteps:\n  - connection/send_connection_close\n',
+    },
+    {
+      path: 'roles/client.yaml',
+      content: 'description: Client role.\n',
+    },
+    {
+      path: 'roles/server.yaml',
+      content: 'description: Server role.\n',
+    },
+    {
+      path: 'events/handshake_failed.yaml',
+      content: 'description: Handshake failed.\n',
+    },
+    {
+      path: 'capabilities/connection/send_connection_close.yaml',
+      content: 'description: Close connection.\n',
+    },
+  ]));
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('returns equivalent validation results for filesystem and in-memory workspaces', async () => {
+  const modelDir = path.join(fixturesDir, 'valid-minimal', 'model');
+  const filesystemResult = await validateWorkspace(new FilesystemWorkspace(modelDir));
+  const inMemoryResult = await validateWorkspace(new InMemoryWorkspace(await readFixtureWorkspace(modelDir)));
+
+  assert.equal(inMemoryResult.valid, filesystemResult.valid);
+  assert.deepEqual(inMemoryResult.diagnostics, filesystemResult.diagnostics);
+  assert.deepEqual(inMemoryResult.summary, filesystemResult.summary);
+  assert.deepEqual(inMemoryResult.coverage, filesystemResult.coverage);
+});
 
 test('validates the valid minimal fixture', async () => {
   const modelDir = path.join(fixturesDir, 'valid-minimal', 'model');
