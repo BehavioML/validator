@@ -1,67 +1,42 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import YAML from 'yaml';
 import { createDiagnostic } from './diagnostics.js';
 import { SOURCE_SCOPES, isYamlFile } from './rules.js';
-
-function toPosixPath(value) {
-  return value.split(path.sep).join('/');
-}
+import { toWorkspace } from './workspace.js';
 
 function stripYamlExtension(value) {
   return value.replace(/\.ya?ml$/u, '');
 }
 
-async function directoryExists(value) {
-  try {
-    const stats = await fs.stat(value);
-    return stats.isDirectory();
-  } catch {
-    return false;
-  }
+function pathSegments(value) {
+  return value.split('/').filter(Boolean);
 }
 
-async function collectYamlFiles(directory) {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  const files = [];
-
-  for (const entry of entries) {
-    const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await collectYamlFiles(fullPath));
-    } else if (entry.isFile() && isYamlFile(entry.name)) {
-      files.push(fullPath);
-    }
-  }
-
-  return files;
-}
-
-export async function loadModel(modelDir) {
-  const absoluteModelDir = path.resolve(modelDir);
+export async function loadModel(workspaceInput) {
+  const workspace = toWorkspace(workspaceInput);
+  const workspaceRoot = typeof workspace.getRoot === 'function' ? workspace.getRoot() : undefined;
   const diagnostics = [];
   const entities = [];
   const index = new Map(SOURCE_SCOPES.map((scope) => [scope, new Map()]));
 
   for (const scope of SOURCE_SCOPES) {
-    const scopeDir = path.join(absoluteModelDir, scope);
-    if (!await directoryExists(scopeDir)) {
-      continue;
-    }
+    const files = await workspace.listFiles(scope);
+    for (const relativeFile of files) {
+      const normalizedFile = relativeFile.replace(/\\/gu, '/');
+      const [fileScope, ...scopeRelativeSegments] = pathSegments(normalizedFile);
+      if (fileScope !== scope || scopeRelativeSegments.length === 0 || !isYamlFile(normalizedFile)) {
+        continue;
+      }
 
-    const files = await collectYamlFiles(scopeDir);
-    for (const absoluteFile of files) {
-      const relativeFile = toPosixPath(path.relative(absoluteModelDir, absoluteFile));
-      const scopeRelativeFile = toPosixPath(path.relative(scopeDir, absoluteFile));
+      const scopeRelativeFile = scopeRelativeSegments.join('/');
       const identity = stripYamlExtension(scopeRelativeFile);
-      const source = await fs.readFile(absoluteFile, 'utf8');
+      const source = await workspace.readFile(relativeFile);
       let document;
 
       try {
         document = YAML.parse(source);
       } catch (error) {
         diagnostics.push(createDiagnostic({
-          file: relativeFile,
+          file: normalizedFile,
           message: `YAML parse error: ${error.message}`,
         }));
         continue;
@@ -70,8 +45,8 @@ export async function loadModel(modelDir) {
       const entity = {
         scope,
         identity,
-        file: relativeFile,
-        absoluteFile,
+        file: normalizedFile,
+        absoluteFile: typeof workspace.resolveFile === 'function' ? workspace.resolveFile(relativeFile) : normalizedFile,
         document,
       };
       entities.push(entity);
@@ -79,7 +54,7 @@ export async function loadModel(modelDir) {
       const scopedIndex = index.get(scope);
       if (scopedIndex.has(identity)) {
         diagnostics.push(createDiagnostic({
-          file: relativeFile,
+          file: normalizedFile,
           message: `duplicate ${scope} identity "${identity}"`,
         }));
       }
@@ -88,9 +63,12 @@ export async function loadModel(modelDir) {
   }
 
   return {
-    modelDir: absoluteModelDir,
+    modelDir: workspaceRoot,
+    workspace,
     entities,
     index,
     diagnostics,
   };
 }
+
+export const loadWorkspace = loadModel;

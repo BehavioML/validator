@@ -1,7 +1,7 @@
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createDiagnostic } from './diagnostics.js';
 import { loadModel } from './load-model.js';
+import { FilesystemWorkspace } from './workspace.js';
 import { RESERVED_TOP_LEVEL_FIELDS } from './rules.js';
 import { createCoverage } from './coverage.js';
 import { createReferenceStats, createValidationSummary } from './summary.js';
@@ -15,15 +15,6 @@ import {
   validateScalarReferenceField,
   validateTypedReference,
 } from './references.js';
-
-async function directoryExists(modelDir) {
-  try {
-    const stats = await fs.stat(modelDir);
-    return stats.isDirectory();
-  } catch {
-    return false;
-  }
-}
 
 function validateIdentity(entity) {
   if (!isPlainObject(entity.document)) {
@@ -686,23 +677,8 @@ function validateEntityReferences(entity, index, stats) {
   }
 }
 
-export async function validateModel(modelDir) {
-  const absoluteModelDir = path.resolve(modelDir);
-  if (!await directoryExists(absoluteModelDir)) {
-    return {
-      valid: false,
-      diagnostics: [createDiagnostic({
-        file: path.basename(modelDir) || modelDir,
-        message: `model directory does not exist: ${modelDir}`,
-      })],
-      entities: [],
-      index: new Map(),
-      summary: createValidationSummary(new Map(), createReferenceStats()),
-      coverage: createCoverage([], new Map()),
-    };
-  }
-
-  const loadedModel = await loadModel(absoluteModelDir);
+export async function validateWorkspace(workspace) {
+  const loadedModel = await loadModel(workspace);
   const stats = createReferenceStats();
   const diagnostics = [...loadedModel.diagnostics];
 
@@ -725,4 +701,23 @@ export async function validateModel(modelDir) {
     summary: createValidationSummary(loadedModel.index, stats),
     coverage: createCoverage(loadedModel.entities, loadedModel.index),
   };
+}
+
+export async function validateModel(modelDir) {
+  const workspace = new FilesystemWorkspace(modelDir);
+  if (!await workspace.exists()) {
+    return {
+      valid: false,
+      diagnostics: [createDiagnostic({
+        file: path.basename(modelDir) || modelDir,
+        message: `model directory does not exist: ${modelDir}`,
+      })],
+      entities: [],
+      index: new Map(),
+      summary: createValidationSummary(new Map(), createReferenceStats()),
+      coverage: createCoverage([], new Map()),
+    };
+  }
+
+  return validateWorkspace(workspace);
 }

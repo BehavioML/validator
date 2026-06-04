@@ -98,6 +98,15 @@ unused-states
 decisions-without-affects
 ```
 
+
+## Embedding and workspace providers
+
+The validator can also be used programmatically through workspace providers. Providers decouple validation from direct filesystem access so hosts can supply files from disk or from memory while preserving the same parsing, reference resolution, validation rules, diagnostics, summaries, and coverage behavior.
+
+This is intended to prepare for embedding in tools such as the BehavioML Explorer. It does not add archive extraction, remote fetching, browser APIs, UI behavior, or Explorer-specific dependencies.
+
+See [Workspace providers](docs/workspace-providers.md) for the architecture notes and API examples.
+
 ## What is validated
 
 The validator currently:
