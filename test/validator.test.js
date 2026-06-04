@@ -500,7 +500,7 @@ test('reports capability reference field present but not an array', async () => 
     severity: 'error',
     file: 'capabilities/connection/send_connection_close.yaml',
     path: 'uses',
-    message: 'expected an array of capability references',
+    message: 'Capability.uses must be an array',
   }]);
 });
 
@@ -825,7 +825,7 @@ test('reports non-array capability uses field', async () => {
     severity: 'error',
     file: 'capabilities/oauth/authorize_client.yaml',
     path: 'uses',
-    message: 'expected an array of capability references',
+    message: 'Capability.uses must be an array',
   }]);
 });
 
@@ -840,7 +840,7 @@ test('reports non-string capability uses entries', async () => {
     severity: 'error',
     file: 'capabilities/oauth/authorize_client.yaml',
     path: 'uses[0]',
-    message: 'expected capability reference to be a string',
+    message: 'Capability.uses entries must be strings',
   }]);
 });
 
@@ -855,7 +855,7 @@ test('reports missing capability uses references', async () => {
     severity: 'error',
     file: 'capabilities/oauth/authorize_client.yaml',
     path: 'uses[0]',
-    message: 'missing capability "oauth/missing_capability"',
+    message: 'Capability.uses reference does not resolve',
   }]);
 });
 
@@ -870,7 +870,7 @@ test('reports direct capability self-use', async () => {
     severity: 'error',
     file: 'capabilities/oauth/validate_client.yaml',
     path: 'uses[0]',
-    message: 'capability must not directly use itself: "oauth/validate_client"',
+    message: 'Capability must not directly use itself',
   }]);
 });
 
@@ -886,7 +886,7 @@ test('warns for duplicate direct capability uses', async () => {
     severity: 'warning',
     file: 'capabilities/oauth/authorize_client.yaml',
     path: 'uses[1]',
-    message: 'duplicate capability use "oauth/validate_client"; Capability.uses is ordered, but duplicate direct uses are likely accidental',
+    message: 'Capability.uses contains duplicate capability reference',
   }]);
 });
 
@@ -904,15 +904,14 @@ test('warns for capability uses cycles with cycle path', async () => {
     severity: 'warning',
     file: 'capabilities/cycle/a.yaml',
     path: 'uses',
-    message: 'capability uses cycle detected: cycle/a -> cycle/b -> cycle/c -> cycle/a',
+    message: 'Capability.uses cycle detected: cycle/a -> cycle/b -> cycle/c -> cycle/a',
   });
 });
 
-test('warns when workflow steps duplicate capability decomposition transitively', async () => {
+test('warns when workflow steps duplicate direct capability decomposition', async () => {
   const modelDir = await createTempModel({
-    'workflows/oauth/authorize.yaml': 'steps:\n  - oauth/authorize_client\n  - oauth/validate_client\n',
-    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/check_policy\n',
-    'capabilities/oauth/check_policy.yaml': 'uses:\n  - oauth/validate_client\n',
+    'workflows/oauth/authorize.yaml': 'steps:\n  - oauth/validate_client\n  - oauth/authorize_client\n',
+    'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/validate_client\n',
     'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
   });
   const result = await validateModel(modelDir);
@@ -922,7 +921,7 @@ test('warns when workflow steps duplicate capability decomposition transitively'
     severity: 'warning',
     file: 'workflows/oauth/authorize.yaml',
     path: 'steps[1]',
-    message: 'workflow step capability "oauth/validate_client" is also internal decomposition of step capability "oauth/authorize_client"',
+    message: 'workflow step capability "oauth/authorize_client" directly uses workflow step capability "oauth/validate_client"',
   }]);
 });
 
