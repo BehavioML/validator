@@ -10,4 +10,7 @@ triggered_by:
   - handshake_failed
 
 steps:
-  - connection/missing_capability
+  - from: client
+    to: server
+    capability: connection/missing_capability
+    label: Send missing capability

@@ -118,7 +118,7 @@ import { InMemoryWorkspace, validateWorkspace } from '@behavioml/validator';
 const result = await validateWorkspace(new InMemoryWorkspace([
   {
     path: 'workflows/client/example.yaml',
-    content: 'steps:\n  - connection/send_connection_close\n',
+    content: 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: connection/send_connection_close\n    label: Send connection close\n',
   },
   {
     path: 'capabilities/connection/send_connection_close.yaml',
@@ -180,7 +180,8 @@ The validator currently:
 - Derives entity identity from the file path inside the entity scope.
 - Rejects top-level `id`, `ids`, `uuid`, and `uuids` fields.
 - Builds an index of entities by scope and path identity.
-- Applies minimal entity shape checks for workflows, capabilities, components, state machines, and decisions.
+- Applies minimal entity shape checks for workflows, including sequence-diagrammable object-shaped workflow steps, capabilities, components, state machines, and decisions.
+- Requires workflow steps to be objects with non-empty `from`, `capability`, and `label` fields, optional non-empty `to`, and no unsupported step-local fields such as `at`, `action`, `event`, `emits`, or `uses`.
 - Resolves semantic references by field type rather than filesystem-relative path.
 - Rejects filesystem-relative references beginning with `./`, beginning with `../`, or containing `/../`.
 - Reports informational coverage findings separately from validation diagnostics.
@@ -214,7 +215,7 @@ The MVP validates these reference fields:
 - Workflow:
   - `roles.primary -> roles/`
   - `roles.participants[] -> roles/`
-  - `steps[] -> capabilities/`
+  - `steps[].capability -> capabilities/`
   - `triggered_by[] -> events/`
 - Capability:
   - `uses[] -> capabilities/` (ordered capability references for internal decomposition; order is preserved by parsers/tools)

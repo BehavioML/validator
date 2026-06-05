@@ -125,16 +125,7 @@ function addWorkflowReferences(references, entity, index) {
           targetScope: 'capabilities',
         });
       }
-      return;
     }
-
-    addReference(references, {
-      entity,
-      index,
-      fieldPath: `steps[${stepIndex}]`,
-      value: step,
-      targetScope: 'capabilities',
-    });
   });
 }
 
@@ -251,4 +242,3 @@ export function createEmptyReferenceIndex() {
     unresolvedReferences: [],
   };
 }
-
