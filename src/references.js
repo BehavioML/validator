@@ -20,6 +20,17 @@ export function isRelativeReference(value) {
   return value.startsWith('./') || value.startsWith('../') || value.includes('/../');
 }
 
+export function resolveReferenceTarget({ index, targetScope, value }) {
+  if (typeof value !== 'string' || isRelativeReference(value)) {
+    return { reference: false };
+  }
+
+  return {
+    reference: true,
+    target: index.get(targetScope)?.get(value),
+  };
+}
+
 export function validateReference({ entity, index, path, value, targetScope, stats }) {
   const displayName = SCOPE_DISPLAY_NAMES[targetScope] ?? targetScope;
 
@@ -39,9 +50,10 @@ export function validateReference({ entity, index, path, value, targetScope, sta
     })];
   }
 
+  const resolved = resolveReferenceTarget({ index, targetScope, value });
   stats.references.checked += 1;
 
-  if (!index.get(targetScope)?.has(value)) {
+  if (!resolved.target) {
     stats.references.missing += 1;
     return [createDiagnostic({
       file: entity.file,
@@ -84,6 +96,39 @@ export function validateArrayReferenceField({ entity, index, fieldPath, pathSegm
     targetScope,
     stats,
   }));
+}
+
+export function parseTypedReference(value) {
+  if (typeof value !== 'string' || value.includes('://')) {
+    return undefined;
+  }
+
+  const separatorIndex = value.indexOf(':');
+  if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+    return undefined;
+  }
+
+  const scope = value.slice(0, separatorIndex);
+  const identity = value.slice(separatorIndex + 1);
+  if (!TYPED_REFERENCE_SCOPES.includes(scope) || isRelativeReference(identity)) {
+    return undefined;
+  }
+
+  return { scope, identity };
+}
+
+export function resolveTypedReferenceTarget({ index, value }) {
+  const typedReference = parseTypedReference(value);
+  if (!typedReference) {
+    return { reference: false };
+  }
+
+  return {
+    reference: true,
+    targetScope: typedReference.scope,
+    targetIdentity: typedReference.identity,
+    target: index.get(typedReference.scope)?.get(typedReference.identity),
+  };
 }
 
 export function validateTypedReference({ entity, index, path, value, stats }) {
@@ -130,9 +175,10 @@ export function validateTypedReference({ entity, index, path, value, stats }) {
     })];
   }
 
+  const resolved = resolveTypedReferenceTarget({ index, value });
   stats.references.checked += 1;
 
-  if (!index.get(scope)?.has(identity)) {
+  if (!resolved.target) {
     stats.references.missing += 1;
     const displayName = SCOPE_DISPLAY_NAMES[scope] ?? scope;
     return [createDiagnostic({

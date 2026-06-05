@@ -107,6 +107,68 @@ This is intended to prepare for embedding in tools such as the BehavioML Explore
 
 See [Workspace providers](docs/workspace-providers.md) for the architecture notes and API examples.
 
+
+### Semantic reference index
+
+Programmatic validation and loading results include a `referenceIndex` object for consumer tools that need semantic navigation without parsing YAML or reimplementing Validator reference rules.
+
+```js
+import { InMemoryWorkspace, validateWorkspace } from '@behavioml/validator';
+
+const result = await validateWorkspace(new InMemoryWorkspace([
+  {
+    path: 'workflows/client/example.yaml',
+    content: 'steps:\n  - connection/send_connection_close\n',
+  },
+  {
+    path: 'capabilities/connection/send_connection_close.yaml',
+    content: 'description: Close connection.\n',
+  },
+]));
+
+console.log(result.referenceIndex.outgoingReferences);
+console.log(result.referenceIndex.incomingReferences);
+console.log(result.referenceIndex.unresolvedReferences);
+```
+
+`loadModel(...)` / `loadWorkspace(...)` also return `referenceIndex` after parsing and indexing. If a host already has a loaded model, it can derive the same structure with `createReferenceIndex(loadedModel)`.
+
+The index shape is:
+
+```js
+{
+  entities: [
+    { scope, identity, file },
+  ],
+  outgoingReferences: [
+    {
+      source: { scope, identity, file },
+      fieldPath,
+      targetScope,
+      targetIdentity,
+      resolved,
+      target: { scope, identity, file }, // present only when resolved
+    },
+  ],
+  incomingReferences: [
+    // resolved outgoing references sorted by target, then source
+  ],
+  unresolvedReferences: [
+    // outgoing references with resolved: false and no target
+  ],
+}
+```
+
+The reference index is intentionally semantic rather than textual:
+
+- It is built only from fields Validator already treats as references.
+- It does not infer references from arbitrary YAML strings.
+- Unresolved entries are included only when the reference has valid reference syntax but the target entity is missing.
+- Invalid reference shapes or invalid syntax remain validation diagnostics and are not represented as targetable references.
+- Source line and column are not available; use `source.file` and `fieldPath` for navigation.
+
+Covered reference fields are the same typed reference fields listed below, including workflow role, trigger, and step capability references; capability `uses`, `requires`, and `events`; component `implements` and `belongs_to`; state machine `entity` and transition `on`; and decision `affects` typed references.
+
 ## What is validated
 
 The validator currently:
