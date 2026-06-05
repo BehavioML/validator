@@ -62,42 +62,82 @@ function validateWorkflowStepRole({ entity, path, value, declaredRoles }) {
   return [];
 }
 
+function validateRequiredNonEmptyString({ entity, path, value, fieldName }) {
+  if (isNonEmptyString(value)) {
+    return [];
+  }
+
+  return [createDiagnostic({
+    file: entity.file,
+    path,
+    message: `required field "${fieldName}" must be a non-empty string`,
+  })];
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+const WORKFLOW_STEP_ALLOWED_FIELDS = new Set(['from', 'to', 'capability', 'label']);
+const WORKFLOW_STEP_FORBIDDEN_FIELDS = new Set(['at', 'action', 'event', 'emits', 'uses']);
+
+function validateWorkflowStepFields({ entity, step, fieldPath }) {
+  const diagnostics = [];
+
+  for (const field of Object.keys(step)) {
+    if (WORKFLOW_STEP_ALLOWED_FIELDS.has(field)) {
+      continue;
+    }
+
+    diagnostics.push(createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.${field}`,
+      message: WORKFLOW_STEP_FORBIDDEN_FIELDS.has(field)
+        ? `workflow steps do not support field "${field}"; use explicit "from", optional "to", "capability", and "label" fields`
+        : `unknown workflow step field "${field}"; expected only "from", optional "to", "capability", and "label"`,
+    }));
+  }
+
+  return diagnostics;
+}
+
 function validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, declaredRoles }) {
   const diagnostics = [];
   const fieldPath = `steps[${stepIndex}]`;
 
-  if (Object.hasOwn(step, 'at')) {
-    diagnostics.push(createDiagnostic({
-      file: entity.file,
-      path: `${fieldPath}.at`,
-      message: 'workflow object steps must use "from"; field "at" is not supported',
-    }));
+  diagnostics.push(...validateWorkflowStepFields({ entity, step, fieldPath }));
+
+  for (const requiredField of ['from', 'capability', 'label']) {
+    if (!Object.hasOwn(step, requiredField)) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: `${fieldPath}.${requiredField}`,
+        message: `required field "${requiredField}" is missing`,
+      }));
+    }
   }
 
-  if (!Object.hasOwn(step, 'capability')) {
-    diagnostics.push(createDiagnostic({
-      file: entity.file,
-      path: `${fieldPath}.capability`,
-      message: 'required field "capability" is missing',
-    }));
-  } else {
-    diagnostics.push(...validateReference({
+  if (Object.hasOwn(step, 'capability')) {
+    diagnostics.push(...validateRequiredNonEmptyString({
       entity,
-      index,
       path: `${fieldPath}.capability`,
       value: step.capability,
-      targetScope: 'capabilities',
-      stats,
+      fieldName: 'capability',
     }));
+
+    if (isNonEmptyString(step.capability)) {
+      diagnostics.push(...validateReference({
+        entity,
+        index,
+        path: `${fieldPath}.capability`,
+        value: step.capability,
+        targetScope: 'capabilities',
+        stats,
+      }));
+    }
   }
 
   if (!Object.hasOwn(step, 'from')) {
-    diagnostics.push(createDiagnostic({
-      file: entity.file,
-      path: `${fieldPath}.from`,
-      message: 'required field "from" is missing',
-    }));
-
     if (Object.hasOwn(step, 'to')) {
       diagnostics.push(createDiagnostic({
         file: entity.file,
@@ -106,29 +146,49 @@ function validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, dec
       }));
     }
   } else {
-    diagnostics.push(...validateWorkflowStepRole({
+    diagnostics.push(...validateRequiredNonEmptyString({
       entity,
       path: `${fieldPath}.from`,
       value: step.from,
-      declaredRoles,
+      fieldName: 'from',
     }));
+
+    if (isNonEmptyString(step.from)) {
+      diagnostics.push(...validateWorkflowStepRole({
+        entity,
+        path: `${fieldPath}.from`,
+        value: step.from,
+        declaredRoles,
+      }));
+    }
   }
 
   if (Object.hasOwn(step, 'to') && Object.hasOwn(step, 'from')) {
-    diagnostics.push(...validateWorkflowStepRole({
+    diagnostics.push(...validateRequiredNonEmptyString({
       entity,
       path: `${fieldPath}.to`,
       value: step.to,
-      declaredRoles,
+      fieldName: 'to',
     }));
+
+    if (isNonEmptyString(step.to)) {
+      diagnostics.push(...validateWorkflowStepRole({
+        entity,
+        path: `${fieldPath}.to`,
+        value: step.to,
+        declaredRoles,
+      }));
+    }
   }
 
-  diagnostics.push(...validateOptionalString({
-    entity,
-    path: `${fieldPath}.label`,
-    value: step.label,
-    message: 'expected label to be a string',
-  }));
+  if (Object.hasOwn(step, 'label')) {
+    diagnostics.push(...validateRequiredNonEmptyString({
+      entity,
+      path: `${fieldPath}.label`,
+      value: step.label,
+      fieldName: 'label',
+    }));
+  }
 
   return diagnostics;
 }
@@ -190,13 +250,10 @@ function validateWorkflow(entity, index, stats) {
         return;
       }
 
-      diagnostics.push(...validateReference({
-        entity,
-        index,
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
         path: fieldPath,
-        value: step,
-        targetScope: 'capabilities',
-        stats,
+        message: 'workflow step must be an object with explicit "from", optional "to", "capability", and "label"',
       }));
     });
   }
@@ -590,10 +647,6 @@ function validateCapabilityUsesCycles(entities, index) {
 }
 
 function workflowStepCapability(step) {
-  if (typeof step === 'string') {
-    return step;
-  }
-
   if (isPlainObject(step) && typeof step.capability === 'string') {
     return step.capability;
   }
@@ -602,7 +655,7 @@ function workflowStepCapability(step) {
 }
 
 function workflowStepCapabilityPath(step, stepIndex) {
-  return isPlainObject(step) ? `steps[${stepIndex}].capability` : `steps[${stepIndex}]`;
+  return `steps[${stepIndex}].capability`;
 }
 
 function validateWorkflowCapabilityDecompositionOverlap(entities, index) {

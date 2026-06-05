@@ -12,8 +12,8 @@ const fixturesDir = path.join(__dirname, 'fixtures');
 
 function coverageFixtureFiles() {
   return {
-    'workflows/entry.yaml': 'steps:\n  - cap/used\n',
-    'workflows/triggered.yaml': 'roles:\n  primary: client\ntriggered_by:\n  - used_event\nsteps:\n  - cap/used\n',
+    'workflows/entry.yaml': 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: cap/used\n    label: Use capability\n',
+    'workflows/triggered.yaml': 'roles:\n  primary: client\ntriggered_by:\n  - used_event\nsteps:\n  - from: client\n    capability: cap/used\n    label: Use capability\n',
     'roles/client.yaml': 'description: Client role.\n',
     'capabilities/cap/used.yaml': 'uses:\n  - cap/used_by_use\nrequires:\n  - req\nevents:\n  - used_event\n',
     'capabilities/cap/no_events.yaml': 'description: Implemented helper.\n',
@@ -67,6 +67,21 @@ async function createTempModel(files) {
   return modelDir;
 }
 
+async function validateSingleStep(stepLines) {
+  const modelDir = await createTempModel({
+    'workflows/client/object-step.yaml': [
+      'roles:',
+      '  primary: client',
+      'steps:',
+      ...stepLines,
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
+  });
+
+  return validateModel(modelDir);
+}
+
 
 test('validates through the filesystem workspace provider', async () => {
   const modelDir = path.join(fixturesDir, 'valid-minimal', 'model');
@@ -84,7 +99,7 @@ test('validates through the in-memory workspace provider', async () => {
   const result = await validateWorkspace(new InMemoryWorkspace([
     {
       path: 'workflows/client/handle_handshake_failure.yaml',
-      content: 'roles:\n  primary: client\n  participants:\n    - server\ntriggered_by:\n  - handshake_failed\nsteps:\n  - connection/send_connection_close\n',
+      content: 'roles:\n  primary: client\n  participants:\n    - server\ntriggered_by:\n  - handshake_failed\nsteps:\n  - from: client\n    to: server\n    capability: connection/send_connection_close\n    label: Send connection close\n',
     },
     {
       path: 'roles/client.yaml',
@@ -154,7 +169,7 @@ test('reports a missing workflow step capability reference', async () => {
   assert.deepEqual(result.diagnostics[0], {
     severity: 'error',
     file: 'workflows/client/handle_handshake_failure.yaml',
-    path: 'steps[0]',
+    path: 'steps[0].capability',
     message: 'missing capability "connection/missing_capability"',
   });
   assert.deepEqual(result.summary.references, {
@@ -188,14 +203,15 @@ test('rejects reserved top-level identity fields', async () => {
 
 test('rejects filesystem-relative references', async () => {
   const modelDir = await createTempModel({
-    'workflows/client/bad.yaml': 'steps:\n  - ../capabilities/connection/send_connection_close\n',
+    'workflows/client/bad.yaml': 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: ../capabilities/connection/send_connection_close\n    label: Bad reference\n',
     'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
+    'roles/client.yaml': 'description: Client role.\n',
   });
   const result = await validateModel(modelDir);
 
   assert.equal(result.valid, false);
   assert.equal(result.diagnostics.length, 1);
-  assert.equal(result.diagnostics[0].path, 'steps[0]');
+  assert.equal(result.diagnostics[0].path, 'steps[0].capability');
   assert.match(result.diagnostics[0].message, /not a filesystem-relative reference/u);
 });
 
@@ -212,15 +228,20 @@ test('rejects invalid decision polymorphic references', async () => {
   assert.match(result.diagnostics[0].message, /URL-like syntax/u);
 });
 
-test('keeps legacy string workflow steps valid', async () => {
+test('rejects legacy string workflow steps', async () => {
   const modelDir = await createTempModel({
     'workflows/client/legacy-step.yaml': 'steps:\n  - connection/send_connection_close\n',
     'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
   });
   const result = await validateModel(modelDir);
 
-  assert.equal(result.valid, true);
-  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/legacy-step.yaml',
+    path: 'steps[0]',
+    message: 'workflow step must be an object with explicit "from", optional "to", "capability", and "label"',
+  }]);
 });
 
 test('accepts object workflow step with from and to roles', async () => {
@@ -254,6 +275,7 @@ test('accepts object workflow step with from only', async () => {
       'steps:',
       '  - from: client',
       '    capability: connection/discard_connection_state',
+      '    label: Discard connection state',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
     'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
@@ -271,6 +293,7 @@ test('reports object workflow step missing capability', async () => {
       '  primary: client',
       'steps:',
       '  - from: client',
+      '    label: Discard connection state',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
   });
@@ -292,6 +315,7 @@ test('reports object workflow step missing from', async () => {
       '  primary: client',
       'steps:',
       '  - capability: connection/send_connection_close',
+      '    label: Send connection close',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
     'capabilities/connection/send_connection_close.yaml': 'description: Close connection.\n',
@@ -307,6 +331,37 @@ test('reports object workflow step missing from', async () => {
   }]);
 });
 
+test('reports object workflow step missing label', async () => {
+  const result = await validateSingleStep([
+    '  - from: client',
+    '    capability: connection/discard_connection_state',
+  ]);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].label',
+    message: 'required field "label" is missing',
+  }]);
+});
+
+test('reports object workflow step with empty label', async () => {
+  const result = await validateSingleStep([
+    '  - from: client',
+    '    capability: connection/discard_connection_state',
+    '    label: ""',
+  ]);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'workflows/client/object-step.yaml',
+    path: 'steps[0].label',
+    message: 'required field "label" must be a non-empty string',
+  }]);
+});
+
 test('reports object workflow step to without from', async () => {
   const modelDir = await createTempModel({
     'workflows/client/object-step.yaml': [
@@ -317,6 +372,7 @@ test('reports object workflow step to without from', async () => {
       'steps:',
       '  - to: server',
       '    capability: connection/send_connection_close',
+      '    label: Send connection close',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
     'roles/server.yaml': 'description: Server role.\n',
@@ -346,6 +402,7 @@ test('reports object workflow step with invalid from role', async () => {
       'steps:',
       '  - from: server',
       '    capability: connection/send_connection_close',
+      '    label: Send connection close',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
     'roles/server.yaml': 'description: Server role.\n',
@@ -371,6 +428,7 @@ test('reports object workflow step with invalid to role', async () => {
       '  - from: client',
       '    to: server',
       '    capability: connection/send_connection_close',
+      '    label: Send connection close',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
     'roles/server.yaml': 'description: Server role.\n',
@@ -396,6 +454,7 @@ test('reports object workflow step with at field', async () => {
       '  - at: client',
       '    from: client',
       '    capability: connection/discard_connection_state',
+      '    label: Discard connection state',
     ].join('\n'),
     'roles/client.yaml': 'description: Client role.\n',
     'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
@@ -407,9 +466,29 @@ test('reports object workflow step with at field', async () => {
     severity: 'error',
     file: 'workflows/client/object-step.yaml',
     path: 'steps[0].at',
-    message: 'workflow object steps must use "from"; field "at" is not supported',
+    message: 'workflow steps do not support field "at"; use explicit "from", optional "to", "capability", and "label" fields',
   }]);
 });
+
+for (const field of ['action', 'event', 'emits', 'uses']) {
+  test(`reports object workflow step with forbidden ${field} field`, async () => {
+    const result = await validateSingleStep([
+      '  - from: client',
+      '    capability: connection/discard_connection_state',
+      '    label: Discard connection state',
+      field === 'uses' ? '    uses:' : `    ${field}: invalid_value`,
+      ...(field === 'uses' ? ['      - connection_id'] : []),
+    ]);
+
+    assert.equal(result.valid, false);
+    assert.deepEqual(result.diagnostics, [{
+      severity: 'error',
+      file: 'workflows/client/object-step.yaml',
+      path: `steps[0].${field}`,
+      message: `workflow steps do not support field "${field}"; use explicit "from", optional "to", "capability", and "label" fields`,
+    }]);
+  });
+}
 
 test('reports object workflow step with non-string label', async () => {
   const modelDir = await createTempModel({
@@ -432,7 +511,7 @@ test('reports object workflow step with non-string label', async () => {
     severity: 'error',
     file: 'workflows/client/object-step.yaml',
     path: 'steps[0].label',
-    message: 'expected label to be a string',
+    message: 'required field "label" must be a non-empty string',
   }]);
 });
 
@@ -754,7 +833,7 @@ test('reports coverage counts on a small fixture', async () => {
   assert.deepEqual(result.diagnostics, []);
   assert.deepEqual(result.coverage.counts, {
     'workflows-without-explicit-trigger': 1,
-    'workflows-without-primary-role': 1,
+    'workflows-without-primary-role': 0,
     'capabilities-without-events': 1,
     'unused-events': 1,
     'unused-capabilities': 0,
@@ -824,8 +903,9 @@ test('unknown warning category exits with code 2', async () => {
 
 test('coverage warnings do not make a valid model invalid', async () => {
   const modelDir = await createTempModel({
-    'workflows/entry.yaml': 'steps:\n  - helper\n',
+    'workflows/entry.yaml': 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: helper\n    label: Run helper\n',
     'capabilities/helper.yaml': 'description: Internal helper.\n',
+    'roles/client.yaml': 'description: Client role.\n',
   });
   const result = await validateModel(modelDir);
 
@@ -971,9 +1051,10 @@ test('warns for capability uses cycles with cycle path', async () => {
 
 test('warns when workflow steps duplicate direct capability decomposition', async () => {
   const modelDir = await createTempModel({
-    'workflows/oauth/authorize.yaml': 'steps:\n  - oauth/validate_client\n  - oauth/authorize_client\n',
+    'workflows/oauth/authorize.yaml': 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: oauth/validate_client\n    label: Validate client\n  - from: client\n    capability: oauth/authorize_client\n    label: Authorize client\n',
     'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/validate_client\n',
     'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
+    'roles/client.yaml': 'description: Client role.\n',
   });
   const result = await validateModel(modelDir);
 
@@ -981,23 +1062,25 @@ test('warns when workflow steps duplicate direct capability decomposition', asyn
   assert.deepEqual(result.diagnostics, [{
     severity: 'warning',
     file: 'workflows/oauth/authorize.yaml',
-    path: 'steps[1]',
+    path: 'steps[1].capability',
     message: 'workflow step capability "oauth/authorize_client" directly uses workflow step capability "oauth/validate_client"',
   }]);
 });
 
 test('validates representative OAuth and QUIC capability uses examples', async () => {
   const oauthModelDir = await createTempModel({
-    'workflows/oauth/authorize.yaml': 'steps:\n  - oauth/authorize_client\n',
+    'workflows/oauth/authorize.yaml': 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: oauth/authorize_client\n    label: Authorize client\n',
     'capabilities/oauth/authorize_client.yaml': 'uses:\n  - oauth/validate_client\n  - oauth/issue_token\n',
     'capabilities/oauth/validate_client.yaml': 'description: Validate client credentials.\n',
     'capabilities/oauth/issue_token.yaml': 'description: Issue access token.\n',
+    'roles/client.yaml': 'description: Client role.\n',
   });
   const quicModelDir = await createTempModel({
-    'workflows/quic/establish_connection.yaml': 'steps:\n  - quic/complete_handshake\n',
+    'workflows/quic/establish_connection.yaml': 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: quic/complete_handshake\n    label: Complete handshake\n',
     'capabilities/quic/complete_handshake.yaml': 'uses:\n  - quic/validate_transport_parameters\n  - quic/derive_keys\n',
     'capabilities/quic/validate_transport_parameters.yaml': 'description: Validate transport parameters.\n',
     'capabilities/quic/derive_keys.yaml': 'description: Derive handshake keys.\n',
+    'roles/client.yaml': 'description: Client role.\n',
   });
 
   const oauthResult = await validateModel(oauthModelDir);
@@ -1019,9 +1102,12 @@ function referenceFixtureFiles({ missingCapability = false } = {}) {
       'triggered_by:',
       '  - order/submitted',
       'steps:',
-      `  - ${missingCapability ? 'order/missing' : 'order/validate'}`,
+      '  - from: buyer',
+      `    capability: ${missingCapability ? 'order/missing' : 'order/validate'}`,
+      '    label: Validate order',
       '  - from: buyer',
       '    capability: order/charge',
+      '    label: Charge order',
     ].join('\n'),
     'roles/buyer.yaml': 'description: Buyer role.\n',
     'roles/seller.yaml': 'description: Seller role.\n',
@@ -1067,12 +1153,12 @@ test('reference index exposes resolved workflow step capability references', asy
   assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
     sourceScope: 'workflows',
     sourceIdentity: 'order/process',
-    fieldPath: 'steps[0]',
+    fieldPath: 'steps[0].capability',
     targetScope: 'capabilities',
     targetIdentity: 'order/validate',
   }), {
     source: { scope: 'workflows', identity: 'order/process', file: 'workflows/order/process.yaml' },
-    fieldPath: 'steps[0]',
+    fieldPath: 'steps[0].capability',
     targetScope: 'capabilities',
     targetIdentity: 'order/validate',
     resolved: true,
@@ -1094,7 +1180,7 @@ test('reference index exposes unresolved workflow step capability references', a
   assert.equal(result.valid, false);
   assert.deepEqual(result.referenceIndex.unresolvedReferences, [{
     source: { scope: 'workflows', identity: 'order/process', file: 'workflows/order/process.yaml' },
-    fieldPath: 'steps[0]',
+    fieldPath: 'steps[0].capability',
     targetScope: 'capabilities',
     targetIdentity: 'order/missing',
     resolved: false,
@@ -1124,7 +1210,7 @@ test('reference index exposes component implements capability backlinks', async 
   assert.deepEqual(backlinks, [
     'components:order_processor:implements.capabilities[0]',
     'decisions:retry:affects[0]',
-    'workflows:order/process:steps[0]',
+    'workflows:order/process:steps[0].capability',
   ]);
 });
 
@@ -1154,8 +1240,8 @@ test('reference index exposes decision typed references', async () => {
 
 test('reference index represents unresolved references by missing target', async () => {
   const result = await validateWorkspace(new InMemoryWorkspace([
-    { path: 'workflows/a.yaml', content: 'steps:\n  - missing/shared\n' },
-    { path: 'workflows/b.yaml', content: 'steps:\n  - missing/shared\n' },
+    { path: 'workflows/a.yaml', content: 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: missing/shared\n    label: Missing shared\n' },
+    { path: 'workflows/b.yaml', content: 'roles:\n  primary: client\nsteps:\n  - from: client\n    capability: missing/shared\n    label: Missing shared\n' },
     { path: 'components/c.yaml', content: 'implements:\n  capabilities:\n    - missing/shared\n' },
   ]));
 
@@ -1166,8 +1252,8 @@ test('reference index represents unresolved references by missing target', async
 
   assert.deepEqual(missingSharedReferences, [
     'components/c.yaml implements.capabilities[0]',
-    'workflows/a.yaml steps[0]',
-    'workflows/b.yaml steps[0]',
+    'workflows/a.yaml steps[0].capability',
+    'workflows/b.yaml steps[0].capability',
   ]);
 });
 

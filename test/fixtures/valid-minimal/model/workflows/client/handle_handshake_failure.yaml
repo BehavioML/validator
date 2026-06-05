@@ -10,5 +10,10 @@ triggered_by:
   - handshake_failed
 
 steps:
-  - connection/send_connection_close
-  - connection/discard_connection_state
+  - from: client
+    to: server
+    capability: connection/send_connection_close
+    label: Send Connection Close
+  - from: client
+    capability: connection/discard_connection_state
+    label: Discard connection state

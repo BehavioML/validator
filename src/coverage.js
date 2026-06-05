@@ -114,9 +114,7 @@ function collectWorkflowStepCapabilities(entities) {
     }
 
     for (const step of steps) {
-      if (typeof step === 'string') {
-        referenced.add(step);
-      } else if (isPlainObject(step) && typeof step.capability === 'string') {
+      if (isPlainObject(step) && typeof step.capability === 'string') {
         referenced.add(step.capability);
       }
     }
