@@ -58,6 +58,9 @@ const result = await validateWorkspace(new FilesystemWorkspace('examples/quic/mo
 
 `validateModel(modelDir)` remains available as the compatibility API for filesystem validation and is what the CLI uses internally.
 
+
+Validation results also include `referenceIndex`, a structured semantic index of entities, outgoing references, incoming references/backlinks, and unresolved references. The CLI does not print this structure by default; it is intended for programmatic consumers.
+
 ## In-memory provider
 
 `InMemoryWorkspace` validates files that a host has already loaded into memory. It does not extract archives, fetch remote URLs, provide browser APIs, or add Explorer-specific behavior.
@@ -81,13 +84,40 @@ const result = await validateWorkspace(new InMemoryWorkspace([
 
 Paths should be stable workspace-relative identifiers. They are normalized to POSIX-style separators so diagnostics remain consistent with filesystem-backed validation.
 
+
+## Reference index API
+
+`validateWorkspace(workspace)` and `validateModel(modelDir)` return the same validation result as before plus `referenceIndex`:
+
+```js
+const result = await validateWorkspace(workspace);
+
+for (const reference of result.referenceIndex.unresolvedReferences) {
+  console.log(`${reference.targetScope}:${reference.targetIdentity}`);
+  console.log(`${reference.source.file} ${reference.fieldPath}`);
+}
+```
+
+`loadWorkspace(workspace)` and `loadModel(modelDir)` return `referenceIndex` as well for hosts that want parse/index output without running validation rules. `createReferenceIndex(loadedModel)` can derive the same object from an existing loaded model.
+
+The index is built from Validator's known semantic reference fields only:
+
+- `workflows`: `roles.primary`, `roles.participants[]`, `triggered_by[]`, scalar `steps[]`, object `steps[].capability`
+- `capabilities`: `uses[]`, `requires[]`, `events[]`
+- `components`: `implements.capabilities[]`, `implements.interfaces[]`, `belongs_to`
+- `state-machines`: `entity`, `transitions[].on`
+- `decisions`: `affects[]` typed references using `<scope>:<path-identity>` syntax
+
+Unsupported fields and arbitrary string values are intentionally omitted. Malformed references remain diagnostics; unresolved references appear in the index when the source value has valid reference syntax but no target entity exists. Source line and column are not included because the loader currently stores file and field-path identity only.
+
 ## Public API
 
 The minimal programmatic API is:
 
 - `validateModel(modelDir)` for existing filesystem validation and CLI compatibility
 - `validateWorkspace(workspace)` for provider-backed validation
-- `loadModel(workspaceOrModelDir)` / `loadWorkspace(workspaceOrModelDir)` for parsing and indexing without running validation rules
+- `loadModel(workspaceOrModelDir)` / `loadWorkspace(workspaceOrModelDir)` for parsing, entity indexing, and reference indexing without running validation rules
+- `createReferenceIndex(loadedModel)` for deriving a semantic reference index from an already-loaded model
 - `FilesystemWorkspace` for local model directories
 - `InMemoryWorkspace` for already-loaded file collections
 

@@ -4,6 +4,7 @@ import { loadModel } from './load-model.js';
 import { FilesystemWorkspace } from './workspace.js';
 import { RESERVED_TOP_LEVEL_FIELDS } from './rules.js';
 import { createCoverage } from './coverage.js';
+import { createEmptyReferenceIndex } from './reference-index.js';
 import { createReferenceStats, createValidationSummary } from './summary.js';
 import { validateNonEmptyArray, validateOptionalArray, validateOptionalString, validateRequiredArray } from './shapes.js';
 import {
@@ -698,6 +699,7 @@ export async function validateWorkspace(workspace) {
     diagnostics,
     entities: loadedModel.entities,
     index: loadedModel.index,
+    referenceIndex: loadedModel.referenceIndex,
     summary: createValidationSummary(loadedModel.index, stats),
     coverage: createCoverage(loadedModel.entities, loadedModel.index),
   };
@@ -714,6 +716,7 @@ export async function validateModel(modelDir) {
       })],
       entities: [],
       index: new Map(),
+      referenceIndex: createEmptyReferenceIndex(),
       summary: createValidationSummary(new Map(), createReferenceStats()),
       coverage: createCoverage([], new Map()),
     };

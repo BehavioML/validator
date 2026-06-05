@@ -2,6 +2,7 @@ import YAML from 'yaml';
 import { createDiagnostic } from './diagnostics.js';
 import { SOURCE_SCOPES, isYamlFile } from './rules.js';
 import { toWorkspace } from './workspace.js';
+import { createReferenceIndex } from './reference-index.js';
 
 function stripYamlExtension(value) {
   return value.replace(/\.ya?ml$/u, '');
@@ -62,11 +63,14 @@ export async function loadModel(workspaceInput) {
     }
   }
 
+  const referenceIndex = createReferenceIndex({ entities, index });
+
   return {
     modelDir: workspaceRoot,
     workspace,
     entities,
     index,
+    referenceIndex,
     diagnostics,
   };
 }

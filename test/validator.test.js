@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { FilesystemWorkspace, InMemoryWorkspace, formatSummary, runCli, validateModel, validateWorkspace } from '../src/index.js';
+import { FilesystemWorkspace, InMemoryWorkspace, createReferenceIndex, formatSummary, loadWorkspace, runCli, validateModel, validateWorkspace } from '../src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(__dirname, 'fixtures');
@@ -1007,4 +1007,184 @@ test('validates representative OAuth and QUIC capability uses examples', async (
   assert.deepEqual(oauthResult.diagnostics, []);
   assert.equal(quicResult.valid, true);
   assert.deepEqual(quicResult.diagnostics, []);
+});
+
+function referenceFixtureFiles({ missingCapability = false } = {}) {
+  return {
+    'workflows/order/process.yaml': [
+      'roles:',
+      '  primary: buyer',
+      '  participants:',
+      '    - seller',
+      'triggered_by:',
+      '  - order/submitted',
+      'steps:',
+      `  - ${missingCapability ? 'order/missing' : 'order/validate'}`,
+      '  - from: buyer',
+      '    capability: order/charge',
+    ].join('\n'),
+    'roles/buyer.yaml': 'description: Buyer role.\n',
+    'roles/seller.yaml': 'description: Seller role.\n',
+    'events/order/submitted.yaml': 'description: Order submitted.\n',
+    'events/payment/captured.yaml': 'description: Payment captured.\n',
+    'capabilities/order/validate.yaml': 'uses:\n  - order/check_inventory\nrequires:\n  - inventory_api\nevents:\n  - order/submitted\n',
+    'capabilities/order/check_inventory.yaml': 'description: Check inventory.\n',
+    'capabilities/order/charge.yaml': 'events:\n  - payment/captured\n',
+    'interfaces/inventory_api.yaml': 'description: Inventory interface.\n',
+    'components/order_processor.yaml': 'implements:\n  capabilities:\n    - order/validate\n  interfaces:\n    - inventory_api\nbelongs_to: order_module\n',
+    'modules/order_module.yaml': 'description: Order module.\n',
+    'entities/order.yaml': 'description: Order entity.\n',
+    'state-machines/order/lifecycle.yaml': 'entity: order\nstates:\n  - submitted\n  - paid\ntransitions:\n  - from: submitted\n    to: paid\n    on: payment/captured\n',
+    'decisions/retry.yaml': 'affects:\n  - capabilities:order/validate\n  - events:payment/captured\n',
+  };
+}
+
+function publicReferences(referenceIndex) {
+  return {
+    entities: referenceIndex.entities,
+    outgoingReferences: referenceIndex.outgoingReferences,
+    incomingReferences: referenceIndex.incomingReferences,
+    unresolvedReferences: referenceIndex.unresolvedReferences,
+  };
+}
+
+function findReference(references, { sourceScope, sourceIdentity, fieldPath, targetScope, targetIdentity }) {
+  return references.find((reference) => (
+    reference.source.scope === sourceScope
+    && reference.source.identity === sourceIdentity
+    && reference.fieldPath === fieldPath
+    && reference.targetScope === targetScope
+    && reference.targetIdentity === targetIdentity
+  ));
+}
+
+test('reference index exposes resolved workflow step capability references', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
+
+  assert.equal(result.valid, true);
+  assert.equal(result.referenceIndex.entities.length, result.entities.length);
+
+  assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
+    sourceScope: 'workflows',
+    sourceIdentity: 'order/process',
+    fieldPath: 'steps[0]',
+    targetScope: 'capabilities',
+    targetIdentity: 'order/validate',
+  }), {
+    source: { scope: 'workflows', identity: 'order/process', file: 'workflows/order/process.yaml' },
+    fieldPath: 'steps[0]',
+    targetScope: 'capabilities',
+    targetIdentity: 'order/validate',
+    resolved: true,
+    target: { scope: 'capabilities', identity: 'order/validate', file: 'capabilities/order/validate.yaml' },
+  });
+
+  assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
+    sourceScope: 'workflows',
+    sourceIdentity: 'order/process',
+    fieldPath: 'steps[1].capability',
+    targetScope: 'capabilities',
+    targetIdentity: 'order/charge',
+  })?.target, { scope: 'capabilities', identity: 'order/charge', file: 'capabilities/order/charge.yaml' });
+});
+
+test('reference index exposes unresolved workflow step capability references', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles({ missingCapability: true })).map(([path, content]) => ({ path, content }))));
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.referenceIndex.unresolvedReferences, [{
+    source: { scope: 'workflows', identity: 'order/process', file: 'workflows/order/process.yaml' },
+    fieldPath: 'steps[0]',
+    targetScope: 'capabilities',
+    targetIdentity: 'order/missing',
+    resolved: false,
+  }]);
+});
+
+test('reference index exposes capability uses backlinks', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
+
+  assert.deepEqual(findReference(result.referenceIndex.incomingReferences, {
+    sourceScope: 'capabilities',
+    sourceIdentity: 'order/validate',
+    fieldPath: 'uses[0]',
+    targetScope: 'capabilities',
+    targetIdentity: 'order/check_inventory',
+  })?.target, { scope: 'capabilities', identity: 'order/check_inventory', file: 'capabilities/order/check_inventory.yaml' });
+});
+
+test('reference index exposes component implements capability backlinks', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
+
+  const backlinks = result.referenceIndex.incomingReferences
+    .filter((reference) => reference.targetScope === 'capabilities' && reference.targetIdentity === 'order/validate')
+    .map((reference) => `${reference.source.scope}:${reference.source.identity}:${reference.fieldPath}`)
+    .sort();
+
+  assert.deepEqual(backlinks, [
+    'components:order_processor:implements.capabilities[0]',
+    'decisions:retry:affects[0]',
+    'workflows:order/process:steps[0]',
+  ]);
+});
+
+test('reference index exposes state machine transition event references', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
+
+  assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
+    sourceScope: 'state-machines',
+    sourceIdentity: 'order/lifecycle',
+    fieldPath: 'transitions[0].on',
+    targetScope: 'events',
+    targetIdentity: 'payment/captured',
+  })?.target, { scope: 'events', identity: 'payment/captured', file: 'events/payment/captured.yaml' });
+});
+
+test('reference index exposes decision typed references', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
+
+  assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
+    sourceScope: 'decisions',
+    sourceIdentity: 'retry',
+    fieldPath: 'affects[1]',
+    targetScope: 'events',
+    targetIdentity: 'payment/captured',
+  })?.target, { scope: 'events', identity: 'payment/captured', file: 'events/payment/captured.yaml' });
+});
+
+test('reference index represents unresolved references by missing target', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace([
+    { path: 'workflows/a.yaml', content: 'steps:\n  - missing/shared\n' },
+    { path: 'workflows/b.yaml', content: 'steps:\n  - missing/shared\n' },
+    { path: 'components/c.yaml', content: 'implements:\n  capabilities:\n    - missing/shared\n' },
+  ]));
+
+  const missingSharedReferences = result.referenceIndex.unresolvedReferences
+    .filter((reference) => reference.targetScope === 'capabilities' && reference.targetIdentity === 'missing/shared')
+    .map((reference) => `${reference.source.file} ${reference.fieldPath}`)
+    .sort();
+
+  assert.deepEqual(missingSharedReferences, [
+    'components/c.yaml implements.capabilities[0]',
+    'workflows/a.yaml steps[0]',
+    'workflows/b.yaml steps[0]',
+  ]);
+});
+
+test('filesystem and in-memory workspace reference indexes remain equivalent', async () => {
+  const modelDir = await createTempModel(referenceFixtureFiles());
+  const filesystemResult = await validateWorkspace(new FilesystemWorkspace(modelDir));
+  const inMemoryResult = await validateWorkspace(new InMemoryWorkspace(await readFixtureWorkspace(modelDir)));
+
+  assert.deepEqual(publicReferences(inMemoryResult.referenceIndex), publicReferences(filesystemResult.referenceIndex));
+});
+
+
+test('loadWorkspace exposes the same reference index that createReferenceIndex derives', async () => {
+  const loaded = await loadWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
+
+  assert.deepEqual(
+    publicReferences(loaded.referenceIndex),
+    publicReferences(createReferenceIndex(loaded)),
+  );
 });
