@@ -78,6 +78,7 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+const WORKFLOW_EVENT_EMISSION_FIELDS = Object.freeze(['emits', 'may_emit', 'observes', 'outcomes', 'success', 'failure']);
 const WORKFLOW_STEP_ALLOWED_FIELDS = new Set(['from', 'to', 'capability', 'label']);
 const WORKFLOW_STEP_FORBIDDEN_FIELDS = new Set(['at', 'action', 'event', 'emits', 'uses']);
 
@@ -193,8 +194,18 @@ function validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, dec
   return diagnostics;
 }
 
+function validateWorkflowEventEmissionFields(entity) {
+  return WORKFLOW_EVENT_EMISSION_FIELDS
+    .filter((field) => Object.hasOwn(entity.document, field))
+    .map((field) => createDiagnostic({
+      file: entity.file,
+      path: field,
+      message: `workflows do not support top-level event-emission field "${field}"; events are modeled as independent observable occurrences`,
+    }));
+}
+
 function validateWorkflow(entity, index, stats) {
-  const diagnostics = [];
+  const diagnostics = validateWorkflowEventEmissionFields(entity);
   const rolesPrimary = getValueAtPath(entity.document, ['roles', 'primary']);
   const rolesParticipants = getValueAtPath(entity.document, ['roles', 'participants']);
   const triggeredBy = getValueAtPath(entity.document, ['triggered_by']);
@@ -863,7 +874,61 @@ function validateWorkflowCapabilityDecompositionOverlap(entities, index) {
   return diagnostics;
 }
 
+
+const SUSPICIOUS_EVENT_IDENTITY_SUFFIXES = Object.freeze([
+  '_succeeded',
+  '_success',
+  '_failed',
+  '_failure',
+  '_rejected',
+  '_rejection',
+  '_returned',
+  '_completed',
+  '_handled',
+  '_result',
+  '_response_returned',
+  '_request_rejected',
+  '_problem_response',
+  '_status',
+]);
+
+const SUSPICIOUS_EVENT_IDENTITY_TERMS = Object.freeze([
+  'success',
+  'failure',
+  'result',
+  'status',
+  'response_returned',
+  'request_rejected',
+  'problem_response',
+]);
+
+function eventIdentityName(identity) {
+  return identity.split('/').at(-1).toLowerCase();
+}
+
+function isSuspiciousEventIdentity(identity) {
+  const name = eventIdentityName(identity);
+  return SUSPICIOUS_EVENT_IDENTITY_TERMS.includes(name)
+    || SUSPICIOUS_EVENT_IDENTITY_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+function validateEventName(entity) {
+  if (!isSuspiciousEventIdentity(entity.identity)) {
+    return [];
+  }
+
+  return [createDiagnostic({
+    severity: 'warning',
+    file: entity.file,
+    message: 'event name looks like a generic outcome/status/helper label; ensure this event is a meaningful observable occurrence',
+  })];
+}
+
 function validateEntityReferences(entity, index, stats) {
+  if (entity.scope === 'events') {
+    return validateEventName(entity);
+  }
+
   if (!isPlainObject(entity.document)) {
     return [];
   }

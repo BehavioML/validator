@@ -38,7 +38,7 @@ behavioml-validate examples/quic/model
 
 Exit codes:
 
-- `0`: the model is valid
+- `0`: the model is valid; warning-level diagnostics may still be present
 - `1`: validation errors exist
 - `2`: CLI usage error, including a missing model directory
 
@@ -182,6 +182,9 @@ The validator currently:
 - Builds an index of entities by scope and path identity.
 - Applies minimal entity shape checks for semantic areas, workflows, including sequence-diagrammable object-shaped workflow steps, capabilities, components, state machines, and decisions.
 - Requires workflow steps to be objects with non-empty `from`, `capability`, and `label` fields, optional non-empty `to`, and no unsupported step-local fields such as `at`, `action`, `event`, `emits`, or `uses`.
+- Rejects workflow top-level event-emission fields (`emits`, `may_emit`, `observes`, `outcomes`, `success`, and `failure`) because workflows do not own emitted events.
+- Treats an event as a meaningful observable occurrence that happened in the system, with event identity derived from the file path under `events/`.
+- Warns heuristically when an event identity looks like a generic outcome, status, response, rejection, result, or helper-completion label.
 - Resolves semantic references by field type rather than filesystem-relative path.
 - Rejects filesystem-relative references beginning with `./`, beginning with `../`, or containing `/../`.
 - Reports informational coverage findings separately from validation diagnostics.
@@ -251,9 +254,9 @@ decisions
 semantic-areas
 ```
 
-URL-like typed references such as `events://handshake_failed` are rejected.
+URL-like typed references such as `events://handshake_alert_received` are rejected.
 
-Workflow `steps` use object-shaped entries with explicit `from`, optional `to`, `capability`, and `label` fields.
+Workflow `steps` use object-shaped entries with explicit `from`, optional `to`, `capability`, and `label` fields. Workflow files do not support top-level event-emission or outcome fields such as `emits`, `may_emit`, `observes`, `outcomes`, `success`, or `failure`; these fields are validation errors and are intentionally not represented in the semantic reference index.
 
 
 ### Semantic areas
@@ -275,11 +278,13 @@ When a model has at least one semantic area, workflows that are not listed by an
 
 ### Minimal shape checks
 
-The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, validates optional semantic-area `workflows`, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. Capability `uses` entries are ordered capability references. The validator checks their shape, reference resolution, direct self-use, duplicate direct uses, and cycles in the directed `uses` graph; direct self-use is rejected because a capability cannot validly decompose directly into itself. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks.
+The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, validates optional semantic-area `workflows`, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. Capability `uses` entries are ordered capability references. The validator checks their shape, reference resolution, direct self-use, duplicate direct uses, and cycles in the directed `uses` graph; direct self-use is rejected because a capability cannot validly decompose directly into itself. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks, plus heuristic event-identity warnings for suspicious generic outcome/status/helper labels.
 
-### Structural warnings
+### Structural and event-discipline warnings
 
-The validator emits non-blocking diagnostics with `warning` severity for structural modeling risks that should not make exploratory models invalid yet. Current warnings include duplicate `SemanticArea.workflows` entries, workflows not listed by any semantic area when semantic areas exist, duplicate direct `Capability.uses`, cycles in the directed `uses` graph, and workflows that include one capability as a top-level step while another step directly uses it as internal decomposition. Capability cycle detection is currently warning-level because cycles are risky for recursive generator/codegen expansion, but BehavioML modeling remains exploratory and should not become too strict prematurely.
+The validator emits non-blocking diagnostics with `warning` severity for structural modeling risks that should not make exploratory models invalid yet. Warning-level diagnostics do not make the model invalid and do not change the CLI exit code when there are no validation errors. Current structural warnings include duplicate `SemanticArea.workflows` entries, workflows not listed by any semantic area when semantic areas exist, duplicate direct `Capability.uses`, cycles in the directed `uses` graph, and workflows that include one capability as a top-level step while another step directly uses it as internal decomposition. Capability cycle detection is currently warning-level because cycles are risky for recursive generator/codegen expansion, but BehavioML modeling remains exploratory and should not become too strict prematurely.
+
+Event-discipline warnings are heuristic. The validator does not parse prose or prove semantic correctness, but event identities ending in suspicious generic labels such as `_succeeded`, `_success`, `_failed`, `_failure`, `_rejected`, `_rejection`, `_returned`, `_completed`, `_handled`, `_result`, `_response_returned`, `_request_rejected`, `_problem_response`, or `_status` are reported for human review. The warning asks authors to ensure the event is a meaningful observable occurrence rather than merely a return value, status-code label, branch name, generic success/failure/rejection/result label, helper completion, local validation outcome, implementation exception, or response payload name. These event-name warnings are not fatal; some suspicious-looking names may still be valid when the occurrence is meaningful.
 
 ## What is not validated yet
 

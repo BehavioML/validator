@@ -7,7 +7,7 @@ roles:
     - server
 
 triggered_by:
-  - handshake_failed
+  - handshake_alert_received
 
 steps:
   - from: client

@@ -99,7 +99,7 @@ test('validates through the in-memory workspace provider', async () => {
   const result = await validateWorkspace(new InMemoryWorkspace([
     {
       path: 'workflows/client/handle_handshake_failure.yaml',
-      content: 'roles:\n  primary: client\n  participants:\n    - server\ntriggered_by:\n  - handshake_failed\nsteps:\n  - from: client\n    to: server\n    capability: connection/send_connection_close\n    label: Send connection close\n',
+      content: 'roles:\n  primary: client\n  participants:\n    - server\ntriggered_by:\n  - handshake_alert_received\nsteps:\n  - from: client\n    to: server\n    capability: connection/send_connection_close\n    label: Send connection close\n',
     },
     {
       path: 'roles/client.yaml',
@@ -110,7 +110,7 @@ test('validates through the in-memory workspace provider', async () => {
       content: 'description: Server role.\n',
     },
     {
-      path: 'events/handshake_failed.yaml',
+      path: 'events/handshake_alert_received.yaml',
       content: 'description: Handshake failed.\n',
     },
     {
@@ -190,6 +190,34 @@ test('ignores non-directory top-level scope entries', async () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+
+for (const field of ['emits', 'may_emit', 'observes', 'outcomes', 'success', 'failure']) {
+  test(`rejects workflow top-level event-emission field ${field}`, async () => {
+    const result = await validateModel(await createTempModel({
+      'workflows/client/bad-event-field.yaml': [
+        `${field}:`,
+        '  - request_rejected',
+        'roles:',
+        '  primary: client',
+        'steps:',
+        '  - from: client',
+        '    capability: connection/discard_connection_state',
+        '    label: Discard connection state',
+      ].join('\n'),
+      'roles/client.yaml': 'description: Client role.\n',
+      'capabilities/connection/discard_connection_state.yaml': 'description: Discard connection state.\n',
+    }));
+
+    assert.equal(result.valid, false);
+    assert.deepEqual(result.diagnostics, [{
+      severity: 'error',
+      file: 'workflows/client/bad-event-field.yaml',
+      path: field,
+      message: `workflows do not support top-level event-emission field "${field}"; events are modeled as independent observable occurrences`,
+    }]);
+  });
+}
+
 test('rejects reserved top-level identity fields', async () => {
   const modelDir = await createTempModel({
     'roles/client.yaml': 'id: client\ndescription: Client role.\n',
@@ -218,8 +246,8 @@ test('rejects filesystem-relative references', async () => {
 
 test('rejects invalid decision polymorphic references', async () => {
   const modelDir = await createTempModel({
-    'decisions/bad.yaml': 'affects:\n  - events://handshake_failed\n',
-    'events/handshake_failed.yaml': 'description: Handshake failed.\n',
+    'decisions/bad.yaml': 'affects:\n  - events://handshake_alert_received\n',
+    'events/handshake_alert_received.yaml': 'description: Handshake alert received.\n',
   });
   const result = await validateModel(modelDir);
 
@@ -227,6 +255,48 @@ test('rejects invalid decision polymorphic references', async () => {
   assert.equal(result.diagnostics.length, 1);
   assert.equal(result.diagnostics[0].path, 'affects[0]');
   assert.match(result.diagnostics[0].message, /URL-like syntax/u);
+});
+
+
+test('warns for suspicious event identities without making the model invalid', async () => {
+  const modelDir = await createTempModel({
+    'events/authorization_succeeded.yaml': 'description: Authorization succeeded.\n',
+    'events/problem_response_returned.yaml': 'description: Problem response returned.\n',
+    'events/request_rejected.yaml': 'description: Request rejected.\n',
+    'events/handler_completed.yaml': 'description: Handler completed.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(
+    result.diagnostics.map((diagnostic) => diagnostic.file).sort(),
+    [
+      'events/authorization_succeeded.yaml',
+      'events/handler_completed.yaml',
+      'events/problem_response_returned.yaml',
+      'events/request_rejected.yaml',
+    ],
+  );
+  result.diagnostics.forEach((diagnostic) => {
+    assert.equal(diagnostic.severity, 'warning');
+    assert.equal(diagnostic.path, '');
+    assert.equal(
+      diagnostic.message,
+      'event name looks like a generic outcome/status/helper label; ensure this event is a meaningful observable occurrence',
+    );
+  });
+});
+
+test('does not warn for occurrence-oriented event identities', async () => {
+  const modelDir = await createTempModel({
+    'events/sdp_offer_received.yaml': 'description: SDP offer received.\n',
+    'events/session_resource_created.yaml': 'description: Session resource created.\n',
+    'events/remote_ice_candidates_replaced.yaml': 'description: Remote ICE candidates replaced.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
 });
 
 test('rejects legacy string workflow steps', async () => {
@@ -575,8 +645,8 @@ test('prints summary on successful CLI validation', async () => {
 
 test('does not count invalid typed reference syntax as checked', async () => {
   const modelDir = await createTempModel({
-    'decisions/bad.yaml': 'affects:\n  - events://handshake_failed\n',
-    'events/handshake_failed.yaml': 'description: Handshake failed.\n',
+    'decisions/bad.yaml': 'affects:\n  - events://handshake_alert_received\n',
+    'events/handshake_alert_received.yaml': 'description: Handshake alert received.\n',
   });
   const result = await validateModel(modelDir);
 
