@@ -129,6 +129,11 @@ function addWorkflowReferences(references, entity, index) {
   });
 }
 
+
+function addSemanticAreaReferences(references, entity, index) {
+  addArrayReferences(references, { entity, index, fieldPath: 'workflows', value: getValueAtPath(entity.document, ['workflows']), targetScope: 'workflows' });
+}
+
 function addCapabilityReferences(references, entity, index) {
   addArrayReferences(references, { entity, index, fieldPath: 'uses', value: getValueAtPath(entity.document, ['uses']), targetScope: 'capabilities' });
   addArrayReferences(references, { entity, index, fieldPath: 'requires', value: getValueAtPath(entity.document, ['requires']), targetScope: 'interfaces' });
@@ -188,6 +193,9 @@ function addEntityReferences(references, entity, index) {
   switch (entity.scope) {
     case 'workflows':
       addWorkflowReferences(references, entity, index);
+      return;
+    case 'semantic-areas':
+      addSemanticAreaReferences(references, entity, index);
       return;
     case 'capabilities':
       addCapabilityReferences(references, entity, index);

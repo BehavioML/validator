@@ -261,6 +261,159 @@ function validateWorkflow(entity, index, stats) {
   return diagnostics;
 }
 
+
+const SEMANTIC_AREA_ALLOWED_FIELDS = new Set(['name', 'description', 'workflows', 'notes']);
+const SEMANTIC_AREA_FORBIDDEN_FIELDS = new Set([
+  'kind',
+  'owns',
+  'model_refs',
+  'component',
+  'components',
+  'component_refs',
+  'components_refs',
+]);
+
+function validateSemanticArea(entity, index, stats) {
+  const diagnostics = [];
+
+  for (const field of Object.keys(entity.document)) {
+    if (SEMANTIC_AREA_ALLOWED_FIELDS.has(field)) {
+      continue;
+    }
+
+    diagnostics.push(createDiagnostic({
+      file: entity.file,
+      path: field,
+      message: SEMANTIC_AREA_FORBIDDEN_FIELDS.has(field)
+        ? `semantic areas must not use top-level field "${field}"`
+        : `unsupported semantic area field "${field}"; expected only name, description, workflows, and notes`,
+    }));
+  }
+
+  const workflows = getValueAtPath(entity.document, ['workflows']);
+  if (workflows === undefined) {
+    return diagnostics;
+  }
+
+  if (!Array.isArray(workflows)) {
+    return [
+      ...diagnostics,
+      createDiagnostic({
+        file: entity.file,
+        path: 'workflows',
+        message: 'SemanticArea.workflows must be an array of workflow references',
+      }),
+    ];
+  }
+
+  const seen = new Set();
+  workflows.forEach((workflow, workflowIndex) => {
+    const workflowPath = `workflows[${workflowIndex}]`;
+    if (!isNonEmptyString(workflow)) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: workflowPath,
+        message: 'SemanticArea.workflows entries must be non-empty strings',
+      }));
+      return;
+    }
+
+    diagnostics.push(...validateReference({
+      entity,
+      index,
+      path: workflowPath,
+      value: workflow,
+      targetScope: 'workflows',
+      stats,
+    }));
+
+    if (seen.has(workflow)) {
+      diagnostics.push(createDiagnostic({
+        severity: 'warning',
+        file: entity.file,
+        path: workflowPath,
+        message: 'SemanticArea.workflows contains duplicate workflow reference',
+      }));
+      return;
+    }
+
+    seen.add(workflow);
+  });
+
+  return diagnostics;
+}
+
+function semanticAreaWorkflowOwnerships(entities, index) {
+  const workflowIndex = index.get('workflows') ?? new Map();
+  const ownerships = new Map();
+
+  for (const entity of entities) {
+    if (entity.scope !== 'semantic-areas' || !isPlainObject(entity.document)) {
+      continue;
+    }
+
+    const workflows = getValueAtPath(entity.document, ['workflows']);
+    if (!Array.isArray(workflows)) {
+      continue;
+    }
+
+    const areaWorkflows = new Set();
+    for (let workflowIndexInArea = 0; workflowIndexInArea < workflows.length; workflowIndexInArea += 1) {
+      const workflow = workflows[workflowIndexInArea];
+      if (!isNonEmptyString(workflow) || !workflowIndex.has(workflow) || areaWorkflows.has(workflow)) {
+        continue;
+      }
+
+      areaWorkflows.add(workflow);
+      if (!ownerships.has(workflow)) {
+        ownerships.set(workflow, []);
+      }
+      ownerships.get(workflow).push({ entity, path: `workflows[${workflowIndexInArea}]` });
+    }
+  }
+
+  return ownerships;
+}
+
+function validateSemanticAreaWorkflowOwnership(entities, index) {
+  const diagnostics = [];
+  const semanticAreaCount = index.get('semantic-areas')?.size ?? 0;
+  if (semanticAreaCount === 0) {
+    return diagnostics;
+  }
+
+  const ownerships = semanticAreaWorkflowOwnerships(entities, index);
+
+  for (const [workflow, owners] of ownerships.entries()) {
+    const uniqueOwnerIds = new Set(owners.map(({ entity }) => entity.identity));
+    if (uniqueOwnerIds.size <= 1) {
+      continue;
+    }
+
+    for (const owner of owners) {
+      diagnostics.push(createDiagnostic({
+        file: owner.entity.file,
+        path: owner.path,
+        message: `workflow "${workflow}" is listed by more than one semantic area`,
+      }));
+    }
+  }
+
+  const ownedWorkflows = new Set(ownerships.keys());
+  const workflowEntities = [...(index.get('workflows')?.values() ?? [])].sort((left, right) => left.file.localeCompare(right.file));
+  for (const workflow of workflowEntities) {
+    if (!ownedWorkflows.has(workflow.identity)) {
+      diagnostics.push(createDiagnostic({
+        severity: 'warning',
+        file: workflow.file,
+        message: 'workflow is not listed by any semantic area',
+      }));
+    }
+  }
+
+  return diagnostics;
+}
+
 function validateCapabilityUseReference({ entity, index, stats, path: fieldPath, value }) {
   if (typeof value !== 'string') {
     return [createDiagnostic({
@@ -718,6 +871,8 @@ function validateEntityReferences(entity, index, stats) {
   switch (entity.scope) {
     case 'workflows':
       return validateWorkflow(entity, index, stats);
+    case 'semantic-areas':
+      return validateSemanticArea(entity, index, stats);
     case 'capabilities':
       return validateCapability(entity, index, stats);
     case 'components':
@@ -746,6 +901,7 @@ export async function validateWorkspace(workspace) {
 
   diagnostics.push(...validateCapabilityUsesCycles(loadedModel.entities, loadedModel.index));
   diagnostics.push(...validateWorkflowCapabilityDecompositionOverlap(loadedModel.entities, loadedModel.index));
+  diagnostics.push(...validateSemanticAreaWorkflowOwnership(loadedModel.entities, loadedModel.index));
 
   return {
     valid: diagnostics.every((diagnostic) => diagnostic.severity !== 'error'),
