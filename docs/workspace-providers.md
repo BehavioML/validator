@@ -102,7 +102,8 @@ for (const reference of result.referenceIndex.unresolvedReferences) {
 
 The index is built from Validator's known semantic reference fields only:
 
-- `workflows`: `roles.primary`, `roles.participants[]`, `triggered_by[]`, scalar `steps[]`, object `steps[].capability`
+- `semantic-areas`: `workflows[]`
+- `workflows`: `roles.primary`, `roles.participants[]`, `triggered_by[]`, `steps[].capability`
 - `capabilities`: `uses[]`, `requires[]`, `events[]`
 - `components`: `implements.capabilities[]`, `implements.interfaces[]`, `belongs_to`
 - `state-machines`: `entity`, `transitions[].on`

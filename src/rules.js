@@ -1,5 +1,6 @@
 export const SOURCE_SCOPES = Object.freeze([
   'workflows',
+  'semantic-areas',
   'roles',
   'capabilities',
   'interfaces',
@@ -19,6 +20,7 @@ export const TYPED_REFERENCE_SCOPES = SOURCE_SCOPES;
 
 export const SCOPE_DISPLAY_NAMES = Object.freeze({
   workflows: 'workflow',
+  'semantic-areas': 'semantic area',
   roles: 'role',
   capabilities: 'capability',
   interfaces: 'interface',

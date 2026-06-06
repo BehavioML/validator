@@ -167,7 +167,7 @@ The reference index is intentionally semantic rather than textual:
 - Invalid reference shapes or invalid syntax remain validation diagnostics and are not represented as targetable references.
 - Source line and column are not available; use `source.file` and `fieldPath` for navigation.
 
-Covered reference fields are the same typed reference fields listed below, including workflow role, trigger, and step capability references; capability `uses`, `requires`, and `events`; component `implements` and `belongs_to`; state machine `entity` and transition `on`; and decision `affects` typed references.
+Covered reference fields are the same typed reference fields listed below, including semantic area `workflows`; workflow role, trigger, and step capability references; capability `uses`, `requires`, and `events`; component `implements` and `belongs_to`; state machine `entity` and transition `on`; and decision `affects` typed references.
 
 ## What is validated
 
@@ -180,17 +180,19 @@ The validator currently:
 - Derives entity identity from the file path inside the entity scope.
 - Rejects top-level `id`, `ids`, `uuid`, and `uuids` fields.
 - Builds an index of entities by scope and path identity.
-- Applies minimal entity shape checks for workflows, including sequence-diagrammable object-shaped workflow steps, capabilities, components, state machines, and decisions.
+- Applies minimal entity shape checks for semantic areas, workflows, including sequence-diagrammable object-shaped workflow steps, capabilities, components, state machines, and decisions.
 - Requires workflow steps to be objects with non-empty `from`, `capability`, and `label` fields, optional non-empty `to`, and no unsupported step-local fields such as `at`, `action`, `event`, `emits`, or `uses`.
 - Resolves semantic references by field type rather than filesystem-relative path.
 - Rejects filesystem-relative references beginning with `./`, beginning with `../`, or containing `/../`.
 - Reports informational coverage findings separately from validation diagnostics.
 - Treats `Capability.uses` entries as ordered capability references for internal decomposition.
+- Validates `SemanticArea.workflows[]` entries as workflow references, rejects unsupported semantic-area ownership/reference fields, reports duplicate workflow ownership, and warns about unowned workflows only when the model contains at least one semantic area.
 
 Supported source scopes:
 
 ```text
 workflows/
+semantic-areas/
 roles/
 capabilities/
 interfaces/
@@ -212,6 +214,8 @@ generated/
 
 The MVP validates these reference fields:
 
+- Semantic area:
+  - `workflows[] -> workflows/`
 - Workflow:
   - `roles.primary -> roles/`
   - `roles.participants[] -> roles/`
@@ -244,19 +248,38 @@ events
 entities
 state-machines
 decisions
+semantic-areas
 ```
 
 URL-like typed references such as `events://handshake_failed` are rejected.
 
-Workflow `steps` currently support scalar string capability references only. Object steps are reported as experimental and unsupported rather than silently accepted.
+Workflow `steps` use object-shaped entries with explicit `from`, optional `to`, `capability`, and `label` fields.
+
+
+### Semantic areas
+
+Files under `semantic-areas/` are loaded as path-identified source model entities. The directory scope determines that a file is a semantic area; semantic-area files should remain minimal and should not declare `kind`.
+
+Supported semantic-area fields are intentionally narrow during progressive adoption:
+
+- `name`
+- `description`
+- `workflows`
+- `notes`
+
+`workflows` is optional. When present, it must be an array of non-empty workflow identity strings, and each entry resolves under `workflows/`. Duplicate `workflows[]` entries inside one semantic area are warning-level diagnostics. A workflow listed by more than one semantic area is an error because semantic-area workflow ownership must be unambiguous.
+
+Semantic areas do not support legacy ownership or cross-model reference shapes. The validator rejects top-level `kind`, `owns`, `model_refs`, and obvious component reference fields (`component`, `components`, `component_refs`, and `components_refs`) in semantic-area files. It does not infer semantic area ownership from workflow directories and does not require every workflow to be listed globally.
+
+When a model has at least one semantic area, workflows that are not listed by any semantic area are reported as warning-level diagnostics. These warnings do not make the model invalid and do not change the CLI exit code when there are no validation errors. Models with no semantic areas do not receive unowned-workflow warnings, preserving compatibility during transition.
 
 ### Minimal shape checks
 
-The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. Capability `uses` entries are ordered capability references. The validator checks their shape, reference resolution, direct self-use, duplicate direct uses, and cycles in the directed `uses` graph; direct self-use is rejected because a capability cannot validly decompose directly into itself. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks.
+The MVP includes a lightweight shape validation layer, not full schema validation. It checks that known reference-bearing fields use the expected scalar string or array shape, validates optional semantic-area `workflows`, requires non-empty `steps` on workflows, requires non-empty `affects` when present on decisions, and verifies state machine transition endpoints against declared `states` when both are present. Capability `uses` entries are ordered capability references. The validator checks their shape, reference resolution, direct self-use, duplicate direct uses, and cycles in the directed `uses` graph; direct self-use is rejected because a capability cannot validly decompose directly into itself. State machine `from` endpoints may be a scalar state or a non-empty array of states; `to` endpoints remain scalar-only. Placeholder entities such as events, roles, interfaces, entities, and modules remain limited to identity checks.
 
 ### Structural warnings
 
-The validator emits non-blocking diagnostics with `warning` severity for structural modeling risks that should not make exploratory models invalid yet. Current `Capability.uses` warnings include duplicate direct uses, cycles in the directed `uses` graph, and workflows that include one capability as a top-level step while another step directly uses it as internal decomposition. Capability cycle detection is currently warning-level because cycles are risky for recursive generator/codegen expansion, but BehavioML modeling remains exploratory and should not become too strict prematurely.
+The validator emits non-blocking diagnostics with `warning` severity for structural modeling risks that should not make exploratory models invalid yet. Current warnings include duplicate `SemanticArea.workflows` entries, workflows not listed by any semantic area when semantic areas exist, duplicate direct `Capability.uses`, cycles in the directed `uses` graph, and workflows that include one capability as a top-level step while another step directly uses it as internal decomposition. Capability cycle detection is currently warning-level because cycles are risky for recursive generator/codegen expansion, but BehavioML modeling remains exploratory and should not become too strict prematurely.
 
 ## What is not validated yet
 

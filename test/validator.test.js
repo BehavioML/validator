@@ -143,6 +143,7 @@ test('validates the valid minimal fixture', async () => {
   assert.deepEqual(result.summary, {
     scopes: {
       workflows: 1,
+      'semantic-areas': 0,
       roles: 2,
       capabilities: 2,
       interfaces: 0,
@@ -519,6 +520,7 @@ test('formats validation summaries as plain text', () => {
   const output = formatSummary({
     scopes: {
       workflows: 1,
+      'semantic-areas': 0,
       roles: 2,
       capabilities: 2,
       interfaces: 0,
@@ -538,6 +540,7 @@ test('formats validation summaries as plain text', () => {
   assert.equal(output, [
     'Model summary:',
     '  workflows:       1',
+    '  semantic-areas:  0',
     '  roles:           2',
     '  capabilities:    2',
     '  interfaces:      0',
@@ -899,6 +902,218 @@ test('unknown warning category exits with code 2', async () => {
   assert.equal(stdout, '');
   assert.match(stderr, /Unknown warning category: not-real/u);
   assert.match(stderr, /Supported warning categories:\n  all\n  workflows-without-explicit-trigger/u);
+});
+
+
+test('accepts valid semantic area workflow references', async () => {
+  const modelDir = await createTempModel({
+    'semantic-areas/packet/receive.yaml': [
+      'name: Protected packet receive',
+      'description: >-',
+      '  Behavior area covering receive-side protected packet processing.',
+      'workflows:',
+      '  - packet/endpoint/receive_protected_packet',
+      '  - packet/endpoint/remove_header_protection',
+      'notes:',
+      '  - This area excludes frame handling.',
+    ].join('\n'),
+    'workflows/packet/endpoint/receive_protected_packet.yaml': 'roles:\n  primary: endpoint\nsteps:\n  - from: endpoint\n    capability: packet/receive\n    label: Receive packet\n',
+    'workflows/packet/endpoint/remove_header_protection.yaml': 'roles:\n  primary: endpoint\nsteps:\n  - from: endpoint\n    capability: packet/remove_header\n    label: Remove header protection\n',
+    'roles/endpoint.yaml': 'description: Endpoint role.\n',
+    'capabilities/packet/receive.yaml': 'description: Receive packet.\n',
+    'capabilities/packet/remove_header.yaml': 'description: Remove header protection.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.summary.scopes['semantic-areas'], 1);
+  assert.deepEqual(result.summary.references, { checked: 6, missing: 0 });
+});
+
+test('rejects invalid semantic area top-level fields', async () => {
+  const cases = [
+    ['kind', 'kind: semantic_area\nname: Protected packet receive\n'],
+    ['owns', 'name: Protected packet receive\nowns:\n  workflows:\n    - packet/endpoint/receive_protected_packet\n'],
+    ['model_refs', 'name: Protected packet receive\nmodel_refs:\n  capabilities:\n    - packet/remove_header_protection\n'],
+    ['component', 'name: Protected packet receive\ncomponent: whip_endpoint\n'],
+    ['components', 'name: Protected packet receive\ncomponents:\n  - whip_endpoint\n'],
+    ['component_refs', 'name: Protected packet receive\ncomponent_refs:\n  - whip_endpoint\n'],
+    ['components_refs', 'name: Protected packet receive\ncomponents_refs:\n  - whip_endpoint\n'],
+  ];
+
+  for (const [field, content] of cases) {
+    const modelDir = await createTempModel({
+      [`semantic-areas/${field}.yaml`]: content,
+    });
+    const result = await validateModel(modelDir);
+
+    assert.equal(result.valid, false, field);
+    assert.deepEqual(result.diagnostics, [{
+      severity: 'error',
+      file: `semantic-areas/${field}.yaml`,
+      path: field,
+      message: `semantic areas must not use top-level field "${field}"`,
+    }]);
+  }
+});
+
+test('rejects unknown semantic area top-level fields', async () => {
+  const modelDir = await createTempModel({
+    'semantic-areas/packet/receive.yaml': 'name: Protected packet receive\ntags:\n  - packet\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'semantic-areas/packet/receive.yaml',
+    path: 'tags',
+    message: 'unsupported semantic area field "tags"; expected only name, description, workflows, and notes',
+  }]);
+});
+
+test('reports invalid semantic area workflow references', async () => {
+  const modelDir = await createTempModel({
+    'semantic-areas/packet/receive.yaml': 'name: Protected packet receive\nworkflows:\n  - missing/workflow\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [{
+    severity: 'error',
+    file: 'semantic-areas/packet/receive.yaml',
+    path: 'workflows[0]',
+    message: 'missing workflow "missing/workflow"',
+  }]);
+});
+
+test('reports semantic area workflows shape errors', async () => {
+  const nonArrayModelDir = await createTempModel({
+    'semantic-areas/packet/receive.yaml': 'name: Protected packet receive\nworkflows: packet/endpoint/receive_protected_packet\n',
+  });
+  const nonArrayResult = await validateModel(nonArrayModelDir);
+
+  assert.equal(nonArrayResult.valid, false);
+  assert.deepEqual(nonArrayResult.diagnostics, [{
+    severity: 'error',
+    file: 'semantic-areas/packet/receive.yaml',
+    path: 'workflows',
+    message: 'SemanticArea.workflows must be an array of workflow references',
+  }]);
+
+  const nonStringModelDir = await createTempModel({
+    'semantic-areas/packet/receive.yaml': 'name: Protected packet receive\nworkflows:\n  - 42\n  - ""\n',
+  });
+  const nonStringResult = await validateModel(nonStringModelDir);
+
+  assert.equal(nonStringResult.valid, false);
+  assert.deepEqual(nonStringResult.diagnostics, [
+    {
+      severity: 'error',
+      file: 'semantic-areas/packet/receive.yaml',
+      path: 'workflows[0]',
+      message: 'SemanticArea.workflows entries must be non-empty strings',
+    },
+    {
+      severity: 'error',
+      file: 'semantic-areas/packet/receive.yaml',
+      path: 'workflows[1]',
+      message: 'SemanticArea.workflows entries must be non-empty strings',
+    },
+  ]);
+});
+
+test('reports duplicate semantic area workflow ownership and local duplicate warnings', async () => {
+  const modelDir = await createTempModel({
+    'semantic-areas/area-a.yaml': 'name: Area A\nworkflows:\n  - packet/receive\n  - packet/receive\n',
+    'semantic-areas/area-b.yaml': 'name: Area B\nworkflows:\n  - packet/receive\n',
+    'workflows/packet/receive.yaml': 'roles:\n  primary: endpoint\nsteps:\n  - from: endpoint\n    capability: packet/receive\n    label: Receive packet\n',
+    'roles/endpoint.yaml': 'description: Endpoint role.\n',
+    'capabilities/packet/receive.yaml': 'description: Receive packet.\n',
+  });
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.diagnostics, [
+    {
+      severity: 'warning',
+      file: 'semantic-areas/area-a.yaml',
+      path: 'workflows[1]',
+      message: 'SemanticArea.workflows contains duplicate workflow reference',
+    },
+    {
+      severity: 'error',
+      file: 'semantic-areas/area-a.yaml',
+      path: 'workflows[0]',
+      message: 'workflow "packet/receive" is listed by more than one semantic area',
+    },
+    {
+      severity: 'error',
+      file: 'semantic-areas/area-b.yaml',
+      path: 'workflows[0]',
+      message: 'workflow "packet/receive" is listed by more than one semantic area',
+    },
+  ]);
+});
+
+test('warns for unowned workflows only when semantic areas exist', async () => {
+  const baseFiles = {
+    'workflows/owned.yaml': 'roles:\n  primary: endpoint\nsteps:\n  - from: endpoint\n    capability: packet/receive\n    label: Receive packet\n',
+    'workflows/unowned.yaml': 'roles:\n  primary: endpoint\nsteps:\n  - from: endpoint\n    capability: packet/receive\n    label: Receive packet\n',
+    'roles/endpoint.yaml': 'description: Endpoint role.\n',
+    'capabilities/packet/receive.yaml': 'description: Receive packet.\n',
+  };
+  const withArea = await validateModel(await createTempModel({
+    ...baseFiles,
+    'semantic-areas/packet.yaml': 'name: Packet\nworkflows:\n  - owned\n',
+  }));
+
+  assert.equal(withArea.valid, true);
+  assert.deepEqual(withArea.diagnostics, [{
+    severity: 'warning',
+    file: 'workflows/unowned.yaml',
+    path: '',
+    message: 'workflow is not listed by any semantic area',
+  }]);
+
+  const withoutArea = await validateModel(await createTempModel(baseFiles));
+
+  assert.equal(withoutArea.valid, true);
+  assert.deepEqual(withoutArea.diagnostics, []);
+});
+
+test('reference index exposes semantic area workflow references and backlinks', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace([
+    { path: 'semantic-areas/packet.yaml', content: 'name: Packet\nworkflows:\n  - packet/receive\n' },
+    { path: 'workflows/packet/receive.yaml', content: 'roles:\n  primary: endpoint\nsteps:\n  - from: endpoint\n    capability: packet/receive\n    label: Receive packet\n' },
+    { path: 'roles/endpoint.yaml', content: 'description: Endpoint role.\n' },
+    { path: 'capabilities/packet/receive.yaml', content: 'description: Receive packet.\n' },
+  ]));
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
+    sourceScope: 'semantic-areas',
+    sourceIdentity: 'packet',
+    fieldPath: 'workflows[0]',
+    targetScope: 'workflows',
+    targetIdentity: 'packet/receive',
+  }), {
+    source: { scope: 'semantic-areas', identity: 'packet', file: 'semantic-areas/packet.yaml' },
+    fieldPath: 'workflows[0]',
+    targetScope: 'workflows',
+    targetIdentity: 'packet/receive',
+    resolved: true,
+    target: { scope: 'workflows', identity: 'packet/receive', file: 'workflows/packet/receive.yaml' },
+  });
+
+  assert.deepEqual(findReference(result.referenceIndex.incomingReferences, {
+    sourceScope: 'semantic-areas',
+    sourceIdentity: 'packet',
+    fieldPath: 'workflows[0]',
+    targetScope: 'workflows',
+    targetIdentity: 'packet/receive',
+  })?.target, { scope: 'workflows', identity: 'packet/receive', file: 'workflows/packet/receive.yaml' });
 });
 
 test('coverage warnings do not make a valid model invalid', async () => {
