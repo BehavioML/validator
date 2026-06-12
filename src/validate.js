@@ -79,14 +79,70 @@ function isNonEmptyString(value) {
 }
 
 const WORKFLOW_EVENT_EMISSION_FIELDS = Object.freeze(['emits', 'may_emit', 'observes', 'outcomes', 'success', 'failure']);
-const WORKFLOW_STEP_ALLOWED_FIELDS = new Set(['from', 'to', 'capability', 'label']);
+const WORKFLOW_CAPABILITY_STEP_ALLOWED_FIELDS = new Set(['from', 'to', 'capability', 'label']);
+const WORKFLOW_REFERENCE_STEP_ALLOWED_FIELDS = new Set(['workflow', 'bind', 'from', 'to', 'capability', 'label']);
 const WORKFLOW_STEP_FORBIDDEN_FIELDS = new Set(['at', 'action', 'event', 'emits', 'uses']);
+const WORKFLOW_REFERENCE_STEP_CAPABILITY_FIELDS = new Set(['from', 'to', 'capability', 'label']);
 
-function validateWorkflowStepFields({ entity, step, fieldPath }) {
+function normalizeWorkflowReference(value) {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  return value.startsWith('workflows/') ? value.slice('workflows/'.length) : value;
+}
+
+function resolveWorkflowReferenceTarget({ index, value }) {
+  const normalized = normalizeWorkflowReference(value);
+  if (normalized === undefined || isRelativeReference(normalized)) {
+    return { reference: false };
+  }
+
+  return {
+    reference: true,
+    targetIdentity: normalized,
+    target: index.get('workflows')?.get(normalized),
+  };
+}
+
+function validateWorkflowReference({ entity, index, path, value, stats }) {
+  if (typeof value !== 'string') {
+    return [createDiagnostic({
+      file: entity.file,
+      path,
+      message: 'expected workflow reference to be a string',
+    })];
+  }
+
+  const normalized = normalizeWorkflowReference(value);
+  if (isRelativeReference(normalized)) {
+    return [createDiagnostic({
+      file: entity.file,
+      path,
+      message: `workflow reference "${value}" must be a path identity, not a filesystem-relative reference`,
+    })];
+  }
+
+  const resolved = resolveWorkflowReferenceTarget({ index, value });
+  stats.references.checked += 1;
+
+  if (!resolved.target) {
+    stats.references.missing += 1;
+    return [createDiagnostic({
+      file: entity.file,
+      path,
+      message: `missing workflow "${value}"`,
+    })];
+  }
+
+  return [];
+}
+
+function validateWorkflowStepFields({ entity, step, fieldPath, allowedFields, variantDescription }) {
   const diagnostics = [];
 
   for (const field of Object.keys(step)) {
-    if (WORKFLOW_STEP_ALLOWED_FIELDS.has(field)) {
+    if (allowedFields.has(field)) {
       continue;
     }
 
@@ -94,8 +150,8 @@ function validateWorkflowStepFields({ entity, step, fieldPath }) {
       file: entity.file,
       path: `${fieldPath}.${field}`,
       message: WORKFLOW_STEP_FORBIDDEN_FIELDS.has(field)
-        ? `workflow steps do not support field "${field}"; use explicit "from", optional "to", "capability", and "label" fields`
-        : `unknown workflow step field "${field}"; expected only "from", optional "to", "capability", and "label"`,
+        ? `workflow steps do not support field "${field}"; ${variantDescription}`
+        : `unknown workflow step field "${field}"; ${variantDescription}`,
     }));
   }
 
@@ -106,7 +162,13 @@ function validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, dec
   const diagnostics = [];
   const fieldPath = `steps[${stepIndex}]`;
 
-  diagnostics.push(...validateWorkflowStepFields({ entity, step, fieldPath }));
+  diagnostics.push(...validateWorkflowStepFields({
+    entity,
+    step,
+    fieldPath,
+    allowedFields: WORKFLOW_CAPABILITY_STEP_ALLOWED_FIELDS,
+    variantDescription: 'use explicit "from", optional "to", "capability", and "label" fields',
+  }));
 
   for (const requiredField of ['from', 'capability', 'label']) {
     if (!Object.hasOwn(step, requiredField)) {
@@ -194,6 +256,148 @@ function validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, dec
   return diagnostics;
 }
 
+
+function childWorkflowRoles(childWorkflow) {
+  const rolesPrimary = getValueAtPath(childWorkflow.document, ['roles', 'primary']);
+  const rolesParticipants = getValueAtPath(childWorkflow.document, ['roles', 'participants']);
+  const roles = workflowRoleReferences(rolesPrimary, rolesParticipants);
+  const steps = getValueAtPath(childWorkflow.document, ['steps']);
+
+  if (Array.isArray(steps)) {
+    for (const step of steps) {
+      if (!isPlainObject(step) || Object.hasOwn(step, 'workflow')) {
+        continue;
+      }
+      if (typeof step.from === 'string') {
+        roles.add(step.from);
+      }
+      if (typeof step.to === 'string') {
+        roles.add(step.to);
+      }
+    }
+  }
+
+  return roles;
+}
+
+function validateWorkflowReferenceBind({ entity, index, step, fieldPath, declaredRoles }) {
+  const diagnostics = [];
+
+  if (!Object.hasOwn(step, 'bind')) {
+    return [createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.bind`,
+      message: 'required field "bind" is missing',
+    })];
+  }
+
+  if (!isPlainObject(step.bind)) {
+    return [createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.bind`,
+      message: 'workflow reference step bind must be a non-empty mapping/object',
+    })];
+  }
+
+  const bindEntries = Object.entries(step.bind);
+  if (bindEntries.length === 0) {
+    return [createDiagnostic({
+      file: entity.file,
+      path: `${fieldPath}.bind`,
+      message: 'workflow reference step bind must be a non-empty mapping/object',
+    })];
+  }
+
+  const resolved = resolveWorkflowReferenceTarget({ index, value: step.workflow });
+  const childWorkflow = resolved.target;
+  const childRoles = childWorkflow ? childWorkflowRoles(childWorkflow) : undefined;
+
+  for (const [childRole, parentRole] of bindEntries) {
+    if (childRoles && !childRoles.has(childRole)) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: `${fieldPath}.bind.${childRole}`,
+        message: `bind key "${childRole}" is not a role used by workflow "${step.workflow}"`,
+      }));
+    }
+
+    if (!isNonEmptyString(parentRole)) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: `${fieldPath}.bind.${childRole}`,
+        message: 'workflow reference bind values must be non-empty strings',
+      }));
+      continue;
+    }
+
+    if (declaredRoles.size > 0 && !declaredRoles.has(parentRole)) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: `${fieldPath}.bind.${childRole}`,
+        message: `bind target role "${parentRole}" is not declared in parent roles.primary or roles.participants`,
+      }));
+    }
+  }
+
+  if (childRoles) {
+    for (const childRole of childRoles) {
+      if (!Object.hasOwn(step.bind, childRole)) {
+        diagnostics.push(createDiagnostic({
+          file: entity.file,
+          path: `${fieldPath}.bind`,
+          message: `child workflow role "${childRole}" is not bound`,
+        }));
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+function validateWorkflowReferenceStep({ entity, index, stats, step, stepIndex, declaredRoles }) {
+  const diagnostics = [];
+  const fieldPath = `steps[${stepIndex}]`;
+
+  diagnostics.push(...validateWorkflowStepFields({
+    entity,
+    step,
+    fieldPath,
+    allowedFields: WORKFLOW_REFERENCE_STEP_ALLOWED_FIELDS,
+    variantDescription: 'workflow reference steps support only "workflow" and "bind" fields',
+  }));
+
+  for (const field of Object.keys(step)) {
+    if (WORKFLOW_REFERENCE_STEP_CAPABILITY_FIELDS.has(field)) {
+      diagnostics.push(createDiagnostic({
+        file: entity.file,
+        path: `${fieldPath}.${field}`,
+        message: `workflow reference steps must not contain capability-step field "${field}"`,
+      }));
+    }
+  }
+
+  diagnostics.push(...validateRequiredNonEmptyString({
+    entity,
+    path: `${fieldPath}.workflow`,
+    value: step.workflow,
+    fieldName: 'workflow',
+  }));
+
+  if (isNonEmptyString(step.workflow)) {
+    diagnostics.push(...validateWorkflowReference({
+      entity,
+      index,
+      path: `${fieldPath}.workflow`,
+      value: step.workflow,
+      stats,
+    }));
+  }
+
+  diagnostics.push(...validateWorkflowReferenceBind({ entity, index, step, fieldPath, declaredRoles }));
+
+  return diagnostics;
+}
+
 function validateWorkflowEventEmissionFields(entity) {
   return WORKFLOW_EVENT_EMISSION_FIELDS
     .filter((field) => Object.hasOwn(entity.document, field))
@@ -257,6 +461,11 @@ function validateWorkflow(entity, index, stats) {
     steps.forEach((step, stepIndex) => {
       const fieldPath = `steps[${stepIndex}]`;
       if (isPlainObject(step)) {
+        if (Object.hasOwn(step, 'workflow')) {
+          diagnostics.push(...validateWorkflowReferenceStep({ entity, index, stats, step, stepIndex, declaredRoles }));
+          return;
+        }
+
         diagnostics.push(...validateObjectWorkflowStep({ entity, index, stats, step, stepIndex, declaredRoles }));
         return;
       }
@@ -264,7 +473,7 @@ function validateWorkflow(entity, index, stats) {
       diagnostics.push(createDiagnostic({
         file: entity.file,
         path: fieldPath,
-        message: 'workflow step must be an object with explicit "from", optional "to", "capability", and "label"',
+        message: 'workflow step must be an object with either explicit capability step fields or workflow reference fields',
       }));
     });
   }
@@ -810,6 +1019,100 @@ function validateCapabilityUsesCycles(entities, index) {
   return diagnostics;
 }
 
+
+function workflowReferenceIdentity(step) {
+  if (!isPlainObject(step) || !Object.hasOwn(step, 'workflow')) {
+    return undefined;
+  }
+
+  const normalized = normalizeWorkflowReference(step.workflow);
+  if (!isNonEmptyString(normalized) || isRelativeReference(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function getWorkflowCompositionGraph(entities, index) {
+  const workflowIndex = index.get('workflows') ?? new Map();
+  const graph = new Map();
+
+  for (const entity of entities) {
+    if (entity.scope !== 'workflows' || !isPlainObject(entity.document)) {
+      continue;
+    }
+
+    const steps = getValueAtPath(entity.document, ['steps']);
+    if (!Array.isArray(steps)) {
+      graph.set(entity.identity, []);
+      continue;
+    }
+
+    const references = steps
+      .map((step) => workflowReferenceIdentity(step))
+      .filter((identity) => identity && workflowIndex.has(identity));
+    graph.set(entity.identity, [...new Set(references)]);
+  }
+
+  return graph;
+}
+
+function validateWorkflowCompositionCycles(entities, index) {
+  const diagnostics = [];
+  const graph = getWorkflowCompositionGraph(entities, index);
+  const workflowIndex = index.get('workflows') ?? new Map();
+  const state = new Map();
+  const stack = [];
+  const stackPositions = new Map();
+  const emittedCycles = new Set();
+
+  function visit(identity) {
+    state.set(identity, 'visiting');
+    stackPositions.set(identity, stack.length);
+    stack.push(identity);
+
+    for (const nextIdentity of graph.get(identity) ?? []) {
+      if (!graph.has(nextIdentity)) {
+        continue;
+      }
+
+      if (state.get(nextIdentity) === 'visiting') {
+        const cycleNodes = stack.slice(stackPositions.get(nextIdentity));
+        const cycleKey = canonicalCycleKey(cycleNodes);
+        if (!emittedCycles.has(cycleKey)) {
+          emittedCycles.add(cycleKey);
+          const cyclePath = [...cycleNodes, nextIdentity]
+            .map((workflowIdentity) => `workflows/${workflowIdentity}`)
+            .join(' -> ');
+          const cycleStart = workflowIndex.get(cycleNodes[0]);
+          diagnostics.push(createDiagnostic({
+            file: cycleStart?.file ?? '',
+            path: 'steps',
+            message: `workflow composition cycle detected: ${cyclePath}`,
+          }));
+        }
+        continue;
+      }
+
+      if (state.get(nextIdentity) !== 'visited') {
+        visit(nextIdentity);
+      }
+    }
+
+    stack.pop();
+    stackPositions.delete(identity);
+    state.set(identity, 'visited');
+  }
+
+  for (const identity of graph.keys()) {
+    if (!state.has(identity)) {
+      visit(identity);
+    }
+  }
+
+  return diagnostics;
+}
+
 function workflowStepCapability(step) {
   if (isPlainObject(step) && typeof step.capability === 'string') {
     return step.capability;
@@ -965,6 +1268,7 @@ export async function validateWorkspace(workspace) {
   }
 
   diagnostics.push(...validateCapabilityUsesCycles(loadedModel.entities, loadedModel.index));
+  diagnostics.push(...validateWorkflowCompositionCycles(loadedModel.entities, loadedModel.index));
   diagnostics.push(...validateWorkflowCapabilityDecompositionOverlap(loadedModel.entities, loadedModel.index));
   diagnostics.push(...validateSemanticAreaWorkflowOwnership(loadedModel.entities, loadedModel.index));
 

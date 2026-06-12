@@ -100,6 +100,23 @@ function addTypedReference(references, { entity, index, fieldPath, value }) {
   }));
 }
 
+function normalizeWorkflowReference(value) {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  return value.startsWith('workflows/') ? value.slice('workflows/'.length) : value;
+}
+
+function addWorkflowReference(references, { entity, index, fieldPath, value }) {
+  const normalized = normalizeWorkflowReference(value);
+  if (normalized === undefined) {
+    return;
+  }
+
+  addReference(references, { entity, index, fieldPath, value: normalized, targetScope: 'workflows' });
+}
+
 function addWorkflowReferences(references, entity, index) {
   const rolesPrimary = getValueAtPath(entity.document, ['roles', 'primary']);
   const rolesParticipants = getValueAtPath(entity.document, ['roles', 'participants']);
@@ -116,7 +133,14 @@ function addWorkflowReferences(references, entity, index) {
 
   steps.forEach((step, stepIndex) => {
     if (isPlainObject(step)) {
-      if (Object.hasOwn(step, 'capability')) {
+      if (Object.hasOwn(step, 'workflow')) {
+        addWorkflowReference(references, {
+          entity,
+          index,
+          fieldPath: `steps[${stepIndex}].workflow`,
+          value: step.workflow,
+        });
+      } else if (Object.hasOwn(step, 'capability')) {
         addReference(references, {
           entity,
           index,
