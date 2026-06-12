@@ -180,8 +180,12 @@ The validator currently:
 - Derives entity identity from the file path inside the entity scope.
 - Rejects top-level `id`, `ids`, `uuid`, and `uuids` fields.
 - Builds an index of entities by scope and path identity.
-- Applies minimal entity shape checks for semantic areas, workflows, including sequence-diagrammable object-shaped workflow steps, capabilities, components, state machines, and decisions.
-- Requires workflow steps to be objects with non-empty `from`, `capability`, and `label` fields, optional non-empty `to`, and no unsupported step-local fields such as `at`, `action`, `event`, `emits`, or `uses`.
+- Applies minimal entity shape checks for semantic areas, workflows, including sequence-diagrammable object-shaped capability steps and aggregated workflow reference steps, capabilities, components, state machines, and decisions.
+- Supports two object-shaped `Workflow.steps[]` variants:
+  - capability steps with non-empty `from`, `capability`, and `label` fields, optional non-empty `to`, and no unsupported step-local fields such as `at`, `action`, `event`, `emits`, or `uses`
+  - workflow reference steps with `workflow` and non-empty `bind` mapping fields; `workflow` may use `workflows/<path-identity>` or the internal `<path-identity>` form, and the step must not also contain capability-step fields (`from`, `to`, `capability`, or `label`)
+- Validates workflow reference `bind` mappings by checking that every directly declared or directly used child workflow role is bound, every bind key names a directly used child role, every bind value is a non-empty string, and bind targets match parent `roles.primary` / `roles.participants` when the parent declares roles.
+- Detects direct and indirect workflow composition cycles while allowing multiple parents to reuse a child workflow and allowing one parent to reference the same child more than once without a cycle.
 - Rejects workflow top-level event-emission fields (`emits`, `may_emit`, `observes`, `outcomes`, `success`, and `failure`) because workflows do not own emitted events.
 - Treats an event as a meaningful observable occurrence that happened in the system, with event identity derived from the file path under `events/`.
 - Warns heuristically when an event identity looks like a generic outcome, status, response, rejection, result, or helper-completion label.
@@ -213,6 +217,13 @@ Ignored scope:
 generated/
 ```
 
+
+### Aggregated workflow limitations
+
+Workflow reference role validation currently inspects the directly referenced child workflow's declared roles and direct capability-step `from` / `to` roles. It does not recursively expand nested child workflow references to derive additional transitive role requirements.
+
+Parent bind target validation follows existing strict workflow role behavior when a parent declares roles: bind targets must appear in `roles.primary` or `roles.participants`. If a parent has no declared roles, this first implementation does not derive or enforce a parent role set from `bind` values.
+
 ### Typed reference checks
 
 The MVP validates these reference fields:
@@ -223,6 +234,7 @@ The MVP validates these reference fields:
   - `roles.primary -> roles/`
   - `roles.participants[] -> roles/`
   - `steps[].capability -> capabilities/`
+  - `steps[].workflow -> workflows/`
   - `triggered_by[] -> events/`
 - Capability:
   - `uses[] -> capabilities/` (ordered capability references for internal decomposition; order is preserved by parsers/tools)

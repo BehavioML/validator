@@ -311,7 +311,7 @@ test('rejects legacy string workflow steps', async () => {
     severity: 'error',
     file: 'workflows/client/legacy-step.yaml',
     path: 'steps[0]',
-    message: 'workflow step must be an object with explicit "from", optional "to", "capability", and "label"',
+    message: 'workflow step must be an object with either explicit capability step fields or workflow reference fields',
   }]);
 });
 
@@ -355,6 +355,309 @@ test('accepts object workflow step with from only', async () => {
 
   assert.equal(result.valid, true);
   assert.deepEqual(result.diagnostics, []);
+});
+
+
+function workflowReferenceFixtureFiles(extra = {}) {
+  return {
+    'workflows/protocol/request_response.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - from: client',
+      '    to: server',
+      '    capability: protocol/send_request',
+      '    label: Send request',
+    ].join('\n'),
+    'workflows/protocol/generic_exchange.yaml': [
+      'roles:',
+      '  primary: endpoint',
+      '  participants:',
+      '    - peer_endpoint',
+      'steps:',
+      '  - from: endpoint',
+      '    to: peer_endpoint',
+      '    capability: protocol/send_request',
+      '    label: Send generic request',
+    ].join('\n'),
+    'roles/client.yaml': 'description: Client role.\n',
+    'roles/server.yaml': 'description: Server role.\n',
+    'roles/endpoint.yaml': 'description: Generic endpoint role.\n',
+    'roles/peer_endpoint.yaml': 'description: Generic peer endpoint role.\n',
+    'capabilities/protocol/send_request.yaml': 'description: Send request.\n',
+    ...extra,
+  };
+}
+
+test('accepts workflow reference step with explicit identical role binding', async () => {
+  const modelDir = await createTempModel(workflowReferenceFixtureFiles({
+    'workflows/aggregate/parent.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ].join('\n'),
+  }));
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('accepts workflow reference step with generic child roles bound to concrete parent roles', async () => {
+  const modelDir = await createTempModel(workflowReferenceFixtureFiles({
+    'workflows/aggregate/parent.yaml': [
+      'roles:',
+      '  primary: server',
+      '  participants:',
+      '    - client',
+      'steps:',
+      '  - workflow: protocol/generic_exchange',
+      '    bind:',
+      '      endpoint: server',
+      '      peer_endpoint: client',
+    ].join('\n'),
+  }));
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+test('accepts the same child workflow referenced by two parents and twice by one parent', async () => {
+  const modelDir = await createTempModel(workflowReferenceFixtureFiles({
+    'workflows/aggregate/first.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: server',
+      '      server: client',
+    ].join('\n'),
+    'workflows/aggregate/second.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ].join('\n'),
+  }));
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.diagnostics, []);
+});
+
+async function validateSingleWorkflowReferenceStep(stepLines, extra = {}) {
+  const modelDir = await createTempModel(workflowReferenceFixtureFiles({
+    'workflows/aggregate/parent.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      ...stepLines,
+    ].join('\n'),
+    ...extra,
+  }));
+
+  return validateModel(modelDir);
+}
+
+const invalidWorkflowReferenceCases = [
+  {
+    name: 'missing bind',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+    ],
+    path: 'steps[0].bind',
+    message: /required field "bind" is missing/u,
+  },
+  {
+    name: 'empty bind',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    bind: {}',
+    ],
+    path: 'steps[0].bind',
+    message: /non-empty mapping/u,
+  },
+  {
+    name: 'non-mapping bind',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      - client',
+    ],
+    path: 'steps[0].bind',
+    message: /non-empty mapping/u,
+  },
+  {
+    name: 'unknown bind key',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+      '      attacker: client',
+    ],
+    path: 'steps[0].bind.attacker',
+    message: /bind key "attacker" is not a role used/u,
+  },
+  {
+    name: 'unbound child role',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+    ],
+    path: 'steps[0].bind',
+    message: /child workflow role "server" is not bound/u,
+  },
+  {
+    name: 'non-string bind value',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+      '      server: 42',
+    ],
+    path: 'steps[0].bind.server',
+    message: /bind values must be non-empty strings/u,
+  },
+  {
+    name: 'missing workflow reference target',
+    step: [
+      '  - workflow: workflows/protocol/missing',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ],
+    path: 'steps[0].workflow',
+    message: /missing workflow "workflows\/protocol\/missing"/u,
+  },
+  {
+    name: 'workflow reference step also has from',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    from: client',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ],
+    path: 'steps[0].from',
+    message: /must not contain capability-step field "from"/u,
+  },
+  {
+    name: 'workflow reference step also has to',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    to: server',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ],
+    path: 'steps[0].to',
+    message: /must not contain capability-step field "to"/u,
+  },
+  {
+    name: 'workflow reference step also has capability',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    capability: protocol/send_request',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ],
+    path: 'steps[0].capability',
+    message: /must not contain capability-step field "capability"/u,
+  },
+  {
+    name: 'workflow reference step also has label',
+    step: [
+      '  - workflow: workflows/protocol/request_response',
+      '    label: Request/response',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ],
+    path: 'steps[0].label',
+    message: /must not contain capability-step field "label"/u,
+  },
+];
+
+for (const { name, step, path: diagnosticPath, message } of invalidWorkflowReferenceCases) {
+  test(`rejects workflow reference step with ${name}`, async () => {
+    const result = await validateSingleWorkflowReferenceStep(step);
+
+    assert.equal(result.valid, false);
+    assert(result.diagnostics.some((diagnostic) => diagnostic.path === diagnosticPath && message.test(diagnostic.message)));
+  });
+}
+
+for (const field of ['event', 'emits', 'uses', 'action', 'at']) {
+  test(`rejects workflow reference step with forbidden ${field} field`, async () => {
+    const result = await validateSingleWorkflowReferenceStep([
+      '  - workflow: workflows/protocol/request_response',
+      `    ${field}: bad`,
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ]);
+
+    assert.equal(result.valid, false);
+    assert(result.diagnostics.some((diagnostic) => diagnostic.path === `steps[0].${field}` && diagnostic.message.includes(`workflow steps do not support field "${field}"`)));
+  });
+}
+
+test('rejects direct workflow composition self-reference', async () => {
+  const modelDir = await createTempModel(workflowReferenceFixtureFiles({
+    'workflows/aggregate/self.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - workflow: workflows/aggregate/self',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ].join('\n'),
+  }));
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert(result.diagnostics.some((diagnostic) => diagnostic.path === 'steps' && /workflows\/aggregate\/self -> workflows\/aggregate\/self/u.test(diagnostic.message)));
+});
+
+test('rejects indirect workflow composition cycles', async () => {
+  const modelDir = await createTempModel(workflowReferenceFixtureFiles({
+    'workflows/a.yaml': 'roles:\n  primary: client\n  participants:\n    - server\nsteps:\n  - workflow: workflows/b\n    bind:\n      client: client\n      server: server\n',
+    'workflows/b.yaml': 'roles:\n  primary: client\n  participants:\n    - server\nsteps:\n  - workflow: workflows/c\n    bind:\n      client: client\n      server: server\n',
+    'workflows/c.yaml': 'roles:\n  primary: client\n  participants:\n    - server\nsteps:\n  - workflow: workflows/a\n    bind:\n      client: client\n      server: server\n',
+  }));
+  const result = await validateModel(modelDir);
+
+  assert.equal(result.valid, false);
+  assert(result.diagnostics.some((diagnostic) => diagnostic.path === 'steps' && /workflows\/a -> workflows\/b -> workflows\/c -> workflows\/a/u.test(diagnostic.message)));
 });
 
 test('reports object workflow step missing capability', async () => {
@@ -1428,6 +1731,38 @@ function findReference(references, { sourceScope, sourceIdentity, fieldPath, tar
     && reference.targetIdentity === targetIdentity
   ));
 }
+
+
+test('reference index exposes workflow reference steps as workflow references', async () => {
+  const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(workflowReferenceFixtureFiles({
+    'workflows/aggregate/parent.yaml': [
+      'roles:',
+      '  primary: client',
+      '  participants:',
+      '    - server',
+      'steps:',
+      '  - workflow: workflows/protocol/request_response',
+      '    bind:',
+      '      client: client',
+      '      server: server',
+    ].join('\n'),
+  })).map(([path, content]) => ({ path, content }))));
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(findReference(result.referenceIndex.outgoingReferences, {
+    sourceScope: 'workflows',
+    sourceIdentity: 'aggregate/parent',
+    fieldPath: 'steps[0].workflow',
+    targetScope: 'workflows',
+    targetIdentity: 'protocol/request_response',
+  })?.target, { scope: 'workflows', identity: 'protocol/request_response', file: 'workflows/protocol/request_response.yaml' });
+  assert.equal(result.referenceIndex.outgoingReferences.some((reference) => (
+    reference.source.scope === 'workflows'
+    && reference.source.identity === 'aggregate/parent'
+    && reference.fieldPath === 'steps[0].workflow'
+    && reference.targetScope === 'capabilities'
+  )), false);
+});
 
 test('reference index exposes resolved workflow step capability references', async () => {
   const result = await validateWorkspace(new InMemoryWorkspace(Object.entries(referenceFixtureFiles()).map(([path, content]) => ({ path, content }))));
